@@ -1,6 +1,9 @@
 # callme
 
 Audio calls with Iroh!
+Now with video too!
+
+This repo is a fork of iroh's callme example, with video and some other features added in.
 
 `callme` is an experimental library and tool that uses [iroh-roq](https://github.com/dignifiedquire/iroh-roq) to transfer Opus-encoded audio between devices. It uses [cpal](https://github.com/RustAudio/cpal) for cross-platform access to the device's audio interfaces. It includes optional audio processing with echo cancellation, and should run on most platforms.
 
