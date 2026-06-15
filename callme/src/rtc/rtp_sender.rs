@@ -3,7 +3,7 @@ use iroh_roq::{
     rtp,
     rtp::{
         codecs::opus::OpusPayloader,
-        packetizer::{new_packetizer, Packetizer},
+        packetizer::{new_packetizer, Packetizer, Payloader},
         sequence::Sequencer,
     },
     SendFlow,
@@ -22,15 +22,24 @@ pub(crate) struct RtpMediaTrackSender {
 
 pub(crate) const MTU: usize = 1100;
 
-pub(crate) const CLOCK_RATE: u32 = crate::audio::SAMPLE_RATE.0;
-
 impl RtpMediaTrackSender {
     pub(crate) async fn run(mut self) -> Result<()> {
         let ssrc = 0;
+        let clock_rate = self.track.codec().sample_rate();
         let sequencer: Box<dyn Sequencer + Send + Sync> =
             Box::new(rtp::sequence::new_random_sequencer());
-        let payloader = match self.track.codec() {
+        let payloader: Box<dyn Payloader + Send + Sync> = match self.track.codec() {
             Codec::Opus { .. } => Box::new(OpusPayloader),
+            Codec::Vp8 => {
+                #[cfg(feature = "video")]
+                {
+                    Box::new(rtp::codecs::vp8::Vp8Payloader::default())
+                }
+                #[cfg(not(feature = "video"))]
+                {
+                    unreachable!("VP8 tracks require the video feature")
+                }
+            }
         };
         let payload_type = self.track.codec().rtp_payload_type();
         let mut packetizer = new_packetizer(
@@ -39,7 +48,7 @@ impl RtpMediaTrackSender {
             ssrc,
             payloader,
             sequencer.clone(),
-            CLOCK_RATE,
+            clock_rate,
         );
         loop {
             let frame = match self.track.recv().await {

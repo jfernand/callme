@@ -49,6 +49,7 @@ impl MediaTrackOpusDecoder {
     pub fn new(track: MediaTrack) -> Result<Self> {
         let channel_count = match track.codec() {
             Codec::Opus { channels } => channels,
+            other => anyhow::bail!("MediaTrackOpusDecoder requires Opus codec, got {other:?}"),
         };
         let audio_format = AudioFormat::new2(OPUS_SAMPLE_RATE, channel_count as u16);
         let decoder =

@@ -1,0 +1,4 @@
+[env]
+# Link libvpx statically so the binary doesn't depend on a specific SONAME
+# (Homebrew ships libvpx.so.12, Ubuntu ships libvpx.so.9; static avoids the mismatch).
+VPX_STATIC = "1"

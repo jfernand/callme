@@ -38,6 +38,22 @@ impl RtpMediaTrackReceiver {
                 self.run_loop(OpusPacket, codec.sample_rate(), first_packet)
                     .await
             }
+            Codec::Vp8 => {
+                #[cfg(feature = "video")]
+                {
+                    self.run_loop(
+                        rtp::codecs::vp8::Vp8Packet::default(),
+                        codec.sample_rate(),
+                        first_packet,
+                    )
+                    .await
+                }
+                #[cfg(not(feature = "video"))]
+                {
+                    let _ = first_packet;
+                    unreachable!("VP8 tracks require the video feature")
+                }
+            }
         }
     }
 

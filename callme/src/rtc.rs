@@ -116,7 +116,9 @@ pub async fn handle_connection_with_audio_context(
             TrackKind::Audio => {
                 audio_ctx.play_track(remote_track).await?;
             }
-            TrackKind::Video => unimplemented!(),
+            TrackKind::Video => {
+                    warn!("received video track but no video context is wired up, dropping");
+                }
         }
     }
     Ok(())

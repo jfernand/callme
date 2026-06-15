@@ -86,7 +86,7 @@ impl WebrtcAudioProcessor {
 
     fn init(&self) -> Result<()> {
         let playback_channels = self.0.playback_channels.load(Ordering::SeqCst);
-        let capture_channels = self.0.playback_channels.load(Ordering::SeqCst);
+        let capture_channels = self.0.capture_channels.load(Ordering::SeqCst);
         let mut processor = webrtc_audio_processing::Processor::new(&InitializationConfig {
             num_capture_channels: capture_channels as i32,
             num_render_channels: playback_channels as i32,
@@ -136,7 +136,7 @@ impl WebrtcAudioProcessor {
         if let Ok(old_val) =
             self.0
                 .capture_delay
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
                     if new_val.abs_diff(val) > 1 {
                         Some(new_val)
                     } else {
@@ -154,7 +154,7 @@ impl WebrtcAudioProcessor {
         if let Ok(old_val) =
             self.0
                 .playback_delay
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |val| {
                     if new_val.abs_diff(val) > 1 {
                         Some(new_val)
                     } else {

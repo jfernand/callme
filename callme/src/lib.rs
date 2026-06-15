@@ -4,6 +4,8 @@ pub mod audio;
 pub mod codec;
 pub mod net;
 pub mod rtc;
+#[cfg(feature = "video")]
+pub mod video;
 
 pub use cpal;
 pub use iroh::NodeId;
