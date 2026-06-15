@@ -20,13 +20,15 @@ use {
             VideoFrame, VideoSource,
         },
     },
+    crossterm::{cursor, execute, terminal},
+    std::io::{stdout, Write},
     std::ops::ControlFlow,
     std::sync::mpsc,
     std::time::Duration,
 };
 
-// (enabled, camera_index, bitrate_kbps)
-type VideoCfg = (bool, u32, u32);
+// (video_enabled, camera_index, bitrate_kbps, ascii_mode)
+type VideoCfg = (bool, u32, u32, bool);
 
 #[derive(Parser, Debug)]
 #[command(about = "Call me iroh", long_about = None)]
@@ -52,6 +54,10 @@ struct Args {
     #[cfg(feature = "video")]
     #[arg(long, default_value = "500")]
     video_bitrate: u32,
+    /// Render remote video as ASCII art in the terminal instead of opening a pixel window.
+    #[cfg(feature = "video")]
+    #[arg(long)]
+    ascii: bool,
     #[clap(subcommand)]
     command: Command,
 }
@@ -59,9 +65,9 @@ struct Args {
 impl Args {
     fn video_cfg(&self) -> VideoCfg {
         #[cfg(feature = "video")]
-        return (self.video, self.camera, self.video_bitrate);
+        return (self.video, self.camera, self.video_bitrate, self.ascii);
         #[cfg(not(feature = "video"))]
-        (false, 0, 500)
+        (false, 0, 500, false)
     }
 }
 
@@ -206,8 +212,10 @@ async fn handle_connection(audio_ctx: AudioContext, conn: RtcConnection, vcfg: V
 
     #[cfg(feature = "video")]
     if vcfg.0 {
-        let (_, camera, bitrate) = vcfg;
-        if let Err(err) = handle_connection_with_video(audio_ctx, conn, camera, bitrate).await {
+        let (_, camera, bitrate, ascii) = vcfg;
+        if let Err(err) =
+            handle_connection_with_video(audio_ctx, conn, camera, bitrate, ascii).await
+        {
             error!("connection from {peer} closed with error: {err:?}");
         } else {
             info!("connection from {peer} closed");
@@ -236,8 +244,9 @@ async fn handle_connection_with_video(
     conn: RtcConnection,
     camera_index: u32,
     video_bitrate_kbps: u32,
+    ascii: bool,
 ) -> anyhow::Result<()> {
-    // Frame channel: decoder tasks → display window (capacity = 1 s at 30 fps).
+    // Frame channel: decoder tasks → display (capacity = 1 s at 30 fps).
     let (frame_tx, frame_rx) = mpsc::sync_channel::<VideoFrame>(30);
 
     // Try to open the camera and send a video track.
@@ -259,9 +268,7 @@ async fn handle_connection_with_video(
             Some(capture)
         }
         Err(e) => {
-            warn!(
-                "failed to open camera {camera_index}: {e} — continuing without local video"
-            );
+            warn!("failed to open camera {camera_index}: {e} — continuing without local video");
             None
         }
     };
@@ -271,9 +278,13 @@ async fn handle_connection_with_video(
     conn.send_track(audio_track).await?;
     info!("audio track sent");
 
-    // Spawn the display window on a blocking thread.
-    // It waits for the first frame before opening the window.
-    let window_task = tokio::task::spawn_blocking(move || run_video_window(frame_rx));
+    // Spawn the display on a blocking thread.  Waits for the first frame before
+    // opening a window / entering the alternate screen.
+    let display_task = if ascii {
+        tokio::task::spawn_blocking(move || run_ascii_video(frame_rx))
+    } else {
+        tokio::task::spawn_blocking(move || run_video_window(frame_rx))
+    };
 
     // Receive and route incoming tracks.
     let conn_result = async {
@@ -292,7 +303,7 @@ async fn handle_connection_with_video(
 
     tokio::select! {
         res = conn_result => res?,
-        _ = window_task => {},
+        _ = display_task => {},
     }
 
     Ok(())
@@ -312,7 +323,7 @@ fn spawn_video_decoder(track: callme::rtc::MediaTrack, tx: mpsc::SyncSender<Vide
         loop {
             match decoder.next_frame() {
                 Ok(ControlFlow::Continue(Some(frame))) => {
-                    // Non-blocking: drop the frame if the window is falling behind.
+                    // Non-blocking: drop the frame if the display is falling behind.
                     tx.try_send(frame).ok();
                 }
                 Ok(ControlFlow::Continue(None)) => {
@@ -332,12 +343,8 @@ fn spawn_video_decoder(track: callme::rtc::MediaTrack, tx: mpsc::SyncSender<Vide
     });
 }
 
-// ── minifb display window ─────────────────────────────────────────────────────
+// ── minifb pixel window ───────────────────────────────────────────────────────
 
-/// Run a [`minifb`] window that displays incoming video frames.
-///
-/// Blocks until the window is closed or the frame channel disconnects.
-/// Intended for use inside [`tokio::task::spawn_blocking`].
 #[cfg(feature = "video")]
 fn run_video_window(frame_rx: mpsc::Receiver<VideoFrame>) {
     use minifb::{Window, WindowOptions};
@@ -368,13 +375,11 @@ fn run_video_window(frame_rx: mpsc::Receiver<VideoFrame>) {
         }
     };
 
-    // Cap the update loop at ~30 fps when no new frames arrive.
     #[allow(deprecated)]
     window.limit_update_rate(Some(Duration::from_millis(33)));
 
     let mut disconnected = false;
     while window.is_open() && !disconnected {
-        // Drain all buffered frames and keep only the latest.
         let mut latest = None;
         loop {
             match frame_rx.try_recv() {
@@ -401,11 +406,136 @@ fn run_video_window(frame_rx: mpsc::Receiver<VideoFrame>) {
     info!("video window closed");
 }
 
-/// Convert an I420 [`VideoFrame`] to the `0x00RRGGBB` u32 pixel format that minifb expects.
 #[cfg(feature = "video")]
 fn i420_to_minifb(frame: &VideoFrame) -> Vec<u32> {
     i420_to_rgba(frame)
         .chunks_exact(4)
         .map(|c| ((c[0] as u32) << 16) | ((c[1] as u32) << 8) | (c[2] as u32))
         .collect()
+}
+
+// ── ASCII terminal renderer ───────────────────────────────────────────────────
+
+/// Render incoming video frames as ASCII art in the terminal's alternate screen.
+///
+/// Blocks until the frame channel disconnects or 30 s elapse with no first frame.
+/// Intended to run inside [`tokio::task::spawn_blocking`].
+#[cfg(feature = "video")]
+fn run_ascii_video(frame_rx: mpsc::Receiver<VideoFrame>) {
+    let mut out = stdout();
+
+    // Enter the alternate screen buffer and hide the cursor so the rendering
+    // doesn't interfere with the shell session.
+    execute!(out, terminal::EnterAlternateScreen, cursor::Hide).ok();
+
+    let result = ascii_render_loop(&frame_rx, &mut out);
+
+    // Always restore the terminal, even on error.
+    execute!(out, terminal::LeaveAlternateScreen, cursor::Show).ok();
+
+    if let Err(e) = result {
+        warn!("ASCII video render error: {e}");
+    }
+    info!("ASCII video display ended");
+}
+
+#[cfg(feature = "video")]
+fn ascii_render_loop(
+    frame_rx: &mpsc::Receiver<VideoFrame>,
+    out: &mut impl Write,
+) -> anyhow::Result<()> {
+    // Wait for the first frame before entering the render loop.
+    let first = match frame_rx.recv_timeout(Duration::from_secs(30)) {
+        Ok(f) => f,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            info!("no remote video received within 30 s; not rendering ASCII");
+            return Ok(());
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
+    };
+
+    let mut current = first;
+
+    loop {
+        let (cols, rows) = terminal::size().unwrap_or((80, 24));
+
+        // Render the current frame.
+        let rendered = frame_to_ascii(&current, cols, rows);
+        execute!(out, cursor::MoveTo(0, 0))?;
+        out.write_all(rendered.as_bytes())?;
+        out.flush()?;
+
+        // Sleep one frame period, then drain the channel for the latest frame.
+        std::thread::sleep(Duration::from_millis(33));
+
+        let mut disconnected = false;
+        loop {
+            match frame_rx.try_recv() {
+                Ok(f) => current = f,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        if disconnected {
+            break;
+        }
+    }
+
+    Ok(())
+}
+
+/// Convert an I420 [`VideoFrame`] to a block of ASCII text sized to fit `cols × rows`.
+///
+/// Uses the luma (Y) plane only; colour information is discarded.  The output
+/// is scaled proportionally — with a 2:1 character-cell aspect ratio assumed —
+/// so the image is letter-boxed rather than stretched.
+#[cfg(feature = "video")]
+fn frame_to_ascii(frame: &VideoFrame, cols: u16, rows: u16) -> String {
+    // ASCII gradient from darkest to lightest.
+    const CHARS: &[u8] = b" .,:;+*?%#@";
+    // Assumed height-to-width ratio of a terminal character cell.
+    // Most modern terminal fonts are close to 2:1.
+    const CHAR_ASPECT: f32 = 2.0;
+
+    let fw = frame.width as f32;
+    let fh = frame.height as f32;
+
+    // Reserve the bottom row so status text / the shell prompt isn't overwritten.
+    let avail_cols = cols as f32;
+    let avail_rows = rows.saturating_sub(1) as f32;
+
+    // Scale uniformly so the frame fits the terminal area.
+    // Terminal display area in virtual pixels: avail_cols × (avail_rows × CHAR_ASPECT).
+    let scale = (avail_cols / fw).min(avail_rows * CHAR_ASPECT / fh);
+    let disp_w = ((fw * scale) as usize).min(cols as usize);
+    let disp_h = ((fh * scale / CHAR_ASPECT) as usize).min(rows.saturating_sub(1) as usize);
+
+    // Centre the image horizontally.
+    let left_pad = (cols as usize).saturating_sub(disp_w) / 2;
+    let pad = " ".repeat(left_pad);
+
+    let fw_u = frame.width as usize;
+    let fh_u = frame.height as usize;
+    let y_plane = &frame.data[..fw_u * fh_u];
+
+    let mut out = String::with_capacity((left_pad + disp_w + 1) * disp_h);
+
+    for row in 0..disp_h {
+        out.push_str(&pad);
+        for col in 0..disp_w {
+            // Nearest-neighbour sample with half-pixel offset for better centering.
+            let src_x = ((col * fw_u) + fw_u / 2) / disp_w.max(1);
+            let src_y = ((row * fh_u) + fh_u / 2) / disp_h.max(1);
+            let y = y_plane[src_y.min(fh_u - 1) * fw_u + src_x.min(fw_u - 1)];
+            // Map Y ∈ [16, 235] (BT.601 limited range) to a character index.
+            let n = (y.saturating_sub(16) as usize * (CHARS.len() - 1)) / 219;
+            out.push(CHARS[n.min(CHARS.len() - 1)] as char);
+        }
+        out.push('\n');
+    }
+
+    out
 }
