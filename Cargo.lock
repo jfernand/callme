@@ -991,45 +991,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "callme-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "callme",
- "clap",
- "crossterm",
- "dialoguer",
- "iroh",
- "minifb",
- "n0-future",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "callme-egui"
-version = "0.1.0"
-dependencies = [
- "android_clipboard",
- "anyhow",
- "arboard",
- "async-channel",
- "callme",
- "eframe 0.29.1",
- "eframe 0.31.1",
- "egui 0.31.1",
- "egui-winit 0.31.1",
- "iroh",
- "n0-future",
- "strum 0.27.1",
- "tokio",
- "tracing",
- "tracing-android",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7186,6 +7147,45 @@ name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ba73ea9cf16a25df0c8caa16c51acb937d5712a8429db78a3ee29d5dcacd3a65"
+
+[[package]]
+name = "vcallme-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "callme",
+ "clap",
+ "crossterm",
+ "dialoguer",
+ "iroh",
+ "minifb",
+ "n0-future",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "vcallme-egui"
+version = "0.1.0"
+dependencies = [
+ "android_clipboard",
+ "anyhow",
+ "arboard",
+ "async-channel",
+ "callme",
+ "eframe 0.29.1",
+ "eframe 0.31.1",
+ "egui 0.31.1",
+ "egui-winit 0.31.1",
+ "iroh",
+ "n0-future",
+ "strum 0.27.1",
+ "tokio",
+ "tracing",
+ "tracing-android",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "version-compare"
