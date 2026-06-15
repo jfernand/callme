@@ -2,6 +2,7 @@ use std::ops::ControlFlow;
 
 use anyhow::Result;
 
+pub mod capture;
 pub mod vp8;
 
 /// A raw video frame in I420 (planar YUV 4:2:0) format.

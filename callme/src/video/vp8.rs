@@ -12,7 +12,7 @@ use vpx_sys::{
 use crate::{
     codec::Codec,
     rtc::{MediaFrame, MediaTrack, TrackKind},
-    video::VideoFrame,
+    video::{VideoFrame, VideoSink},
 };
 
 /// VP8 encoder. Feed I420 [`VideoFrame`]s via [`push_frame`]; the encoded
@@ -185,6 +185,12 @@ impl Drop for Vp8Decoder {
         unsafe {
             vpx_sys::vpx_codec_destroy(self.ctx.as_mut());
         }
+    }
+}
+
+impl VideoSink for Vp8Encoder {
+    fn push_frame(&mut self, frame: &VideoFrame) -> Result<ControlFlow<(), ()>> {
+        Vp8Encoder::push_frame(self, frame)
     }
 }
 
