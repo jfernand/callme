@@ -108,7 +108,7 @@ mod tests {
         let frame = VideoFrame::new_black(width, height);
         let sink: &mut dyn VideoSink = &mut encoder;
         for _ in 0..3 {
-            sink.push_frame(&frame).unwrap();
+            let _ = sink.push_frame(&frame).unwrap();
         }
 
         // Drain encoded payloads from the track.

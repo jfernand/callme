@@ -79,7 +79,7 @@ mod tests {
 
         let frame = VideoFrame::new_black(w, h);
         for _ in 0..5 {
-            encoder.push_frame(&frame).unwrap();
+            let _ = encoder.encode_frame(&frame).unwrap();
         }
         drop(encoder); // signal end-of-stream
 

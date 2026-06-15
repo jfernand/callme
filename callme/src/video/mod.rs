@@ -40,3 +40,18 @@ pub trait VideoSink: Send + 'static {
 pub trait VideoSource: Send + 'static {
     fn next_frame(&mut self) -> Result<ControlFlow<(), Option<VideoFrame>>>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_black_data_size() {
+        let (w, h) = (8u32, 6u32);
+        let frame = VideoFrame::new_black(w, h);
+        assert_eq!(frame.data.len(), (w * h * 3 / 2) as usize);
+        let y_size = (w * h) as usize;
+        assert!(frame.data[..y_size].iter().all(|&b| b == 16), "Y plane must be 16");
+        assert!(frame.data[y_size..].iter().all(|&b| b == 128), "UV planes must be 128");
+    }
+}

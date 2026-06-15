@@ -372,11 +372,19 @@ fn run_video_window(frame_rx: mpsc::Receiver<VideoFrame>) {
     #[allow(deprecated)]
     window.limit_update_rate(Some(Duration::from_millis(33)));
 
-    while window.is_open() {
+    let mut disconnected = false;
+    while window.is_open() && !disconnected {
         // Drain all buffered frames and keep only the latest.
         let mut latest = None;
-        while let Ok(frame) = frame_rx.try_recv() {
-            latest = Some(frame);
+        loop {
+            match frame_rx.try_recv() {
+                Ok(frame) => latest = Some(frame),
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
         }
 
         if let Some(frame) = latest {

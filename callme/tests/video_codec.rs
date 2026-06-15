@@ -31,7 +31,7 @@ fn vp8_encode_decode_roundtrip() -> Result<()> {
 
     // Push several frames so the encoder definitely emits at least one keyframe.
     for _ in 0..3 {
-        let _ = encoder.push_frame(&frame)?;
+        let _ = encoder.encode_frame(&frame)?;
     }
 
     // Collect encoded VP8 payloads from the broadcast track channel.

@@ -35,13 +35,8 @@ impl VideoSource for MediaTrackVp8Decoder {
     /// - `Continue(None)` — no frame is buffered; call again after a short wait.
     /// - `Break(())` — the track is closed and no more frames will arrive.
     fn next_frame(&mut self) -> Result<ControlFlow<(), Option<VideoFrame>>> {
-        let payload: Option<Vec<u8>> = match self.track.try_recv() {
-            Ok(MediaFrame { payload, skipped_frames, .. }) => {
-                if let Some(n) = skipped_frames.filter(|&n| n > 0) {
-                    warn!("VP8 decoder: {n} frames skipped");
-                }
-                Some(payload.to_vec())
-            }
+        let MediaFrame { payload, skipped_frames, .. } = match self.track.try_recv() {
+            Ok(mf) => mf,
             Err(TryRecvError::Empty) => return Ok(ControlFlow::Continue(None)),
             Err(TryRecvError::Lagged(n)) => {
                 warn!("VP8 decoder lagged by {n} frames");
@@ -53,14 +48,14 @@ impl VideoSource for MediaTrackVp8Decoder {
             }
         };
 
-        if let Some(data) = payload {
-            trace!("VP8 decode {} bytes", data.len());
-            match self.decoder.decode(&data)? {
-                Some(frame) => Ok(ControlFlow::Continue(Some(frame))),
-                None => Ok(ControlFlow::Continue(None)),
-            }
-        } else {
-            Ok(ControlFlow::Continue(None))
+        if let Some(n) = skipped_frames.filter(|&n| n > 0) {
+            warn!("VP8 decoder: {n} frames skipped");
+        }
+
+        trace!("VP8 decode {} bytes", payload.len());
+        match self.decoder.decode(&payload)? {
+            Some(frame) => Ok(ControlFlow::Continue(Some(frame))),
+            None => Ok(ControlFlow::Continue(None)),
         }
     }
 }
@@ -207,7 +202,7 @@ mod tests {
         let frame = VideoFrame::new_black(width, height);
         // Push enough frames for the VP8 encoder to emit at least one keyframe.
         for _ in 0..5 {
-            encoder.push_frame(&frame).unwrap();
+            let _ = encoder.encode_frame(&frame).unwrap();
         }
 
         // Give the broadcast channel time to buffer.
@@ -237,7 +232,7 @@ mod tests {
         // Close the encoder/track immediately by dropping.
         let frame = VideoFrame::new_black(32, 32);
         for _ in 0..3 {
-            encoder.push_frame(&frame).unwrap();
+            let _ = encoder.encode_frame(&frame).unwrap();
         }
         drop(encoder);
 
@@ -253,5 +248,43 @@ mod tests {
             }
         }
         assert!(saw_break, "decoder must signal Break after track closes");
+    }
+
+    #[test]
+    fn rgba_minimum_2x2_frame() {
+        // Smallest valid I420 block — must not panic and must have the right size.
+        let frame = VideoFrame::new_black(2, 2);
+        let rgba = i420_to_rgba(&frame);
+        assert_eq!(rgba.len(), 2 * 2 * 4);
+        for chunk in rgba.chunks_exact(4) {
+            assert_eq!(chunk[3], 255, "alpha must be 255");
+        }
+    }
+
+    #[test]
+    fn decoder_returns_continue_none_on_lag() {
+        // A tiny broadcast buffer (cap=2) overflows when the encoder sends 10 frames,
+        // forcing the receiver to see Lagged.  The decoder must return Continue(None)
+        // rather than an error.
+        let (mut encoder, track) = Vp8Encoder::new(32, 32, 30, 200, 2).unwrap();
+        let mut decoder = MediaTrackVp8Decoder::new(track).unwrap();
+
+        let frame = VideoFrame::new_black(32, 32);
+        for _ in 0..10 {
+            let _ = encoder.encode_frame(&frame);
+        }
+
+        let mut saw_continue_none = false;
+        for _ in 0..15 {
+            match decoder.next_frame().unwrap() {
+                ControlFlow::Continue(None) => {
+                    saw_continue_none = true;
+                    break;
+                }
+                ControlFlow::Continue(Some(_)) => {}
+                ControlFlow::Break(()) => break,
+            }
+        }
+        assert!(saw_continue_none, "lagged decoder should return Continue(None), not an error");
     }
 }

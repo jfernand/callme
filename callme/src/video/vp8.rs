@@ -61,7 +61,7 @@ impl Vp8Encoder {
     }
 
     /// Encode one I420 frame and send the resulting [`MediaFrame`](s) to the track.
-    pub fn push_frame(&mut self, frame: &VideoFrame) -> Result<ControlFlow<(), ()>> {
+    pub fn encode_frame(&mut self, frame: &VideoFrame) -> Result<ControlFlow<(), ()>> {
         for encoded in self
             .inner
             .encode(self.pts, &frame.data)
@@ -190,7 +190,7 @@ impl Drop for Vp8Decoder {
 
 impl VideoSink for Vp8Encoder {
     fn push_frame(&mut self, frame: &VideoFrame) -> Result<ControlFlow<(), ()>> {
-        Vp8Encoder::push_frame(self, frame)
+        self.encode_frame(frame)
     }
 }
 

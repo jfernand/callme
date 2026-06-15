@@ -231,29 +231,51 @@ pub fn rgb_to_i420(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
     let w = width as usize;
     let h = height as usize;
     let y_size = w * h;
-    let uv_size = (w / 2) * (h / 2);
+    let uv_rows = h / 2;
+    let uv_cols = w / 2;
+    let uv_size = uv_rows * uv_cols;
     let mut out = vec![0u8; y_size + 2 * uv_size];
 
+    // Y plane: one luma sample per pixel.
     for row in 0..h {
         for col in 0..w {
             let base = (row * w + col) * 3;
             let r = rgb[base] as i32;
             let g = rgb[base + 1] as i32;
             let b = rgb[base + 2] as i32;
-
-            // BT.601 limited range (Y∈[16,235], Cb/Cr∈[16,240]).
-            // Integer approximation: multiply by 256 to avoid floats, add 128 for rounding.
+            // BT.601 limited range (Y∈[16,235]).
             let y = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
             out[row * w + col] = y.clamp(0, 255) as u8;
+        }
+    }
 
-            // Subsample chroma 2×2: only compute U/V for even-row, even-column pixels.
-            if row % 2 == 0 && col % 2 == 0 {
-                let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                let uv_idx = (row / 2) * (w / 2) + col / 2;
-                out[y_size + uv_idx] = u.clamp(0, 255) as u8;
-                out[y_size + uv_size + uv_idx] = v.clamp(0, 255) as u8;
+    // UV planes: average each 2×2 pixel block before converting to chroma.
+    // Averaging reduces colour fringing on edges compared to top-left-only sampling.
+    for br in 0..uv_rows {
+        for bc in 0..uv_cols {
+            let mut r_sum = 0i32;
+            let mut g_sum = 0i32;
+            let mut b_sum = 0i32;
+            for dr in 0..2usize {
+                for dc in 0..2usize {
+                    // Clamp handles odd-dimension inputs gracefully.
+                    let row = (br * 2 + dr).min(h - 1);
+                    let col = (bc * 2 + dc).min(w - 1);
+                    let base = (row * w + col) * 3;
+                    r_sum += rgb[base] as i32;
+                    g_sum += rgb[base + 1] as i32;
+                    b_sum += rgb[base + 2] as i32;
+                }
             }
+            let r = r_sum / 4;
+            let g = g_sum / 4;
+            let b = b_sum / 4;
+            // BT.601 limited range (Cb/Cr∈[16,240]).
+            let u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
+            let v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
+            let uv_idx = br * uv_cols + bc;
+            out[y_size + uv_idx] = u.clamp(0, 255) as u8;
+            out[y_size + uv_size + uv_idx] = v.clamp(0, 255) as u8;
         }
     }
 
@@ -264,11 +286,7 @@ pub fn rgb_to_i420(rgb: &[u8], width: u32, height: u32) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        ops::ControlFlow,
-        sync::{Arc, Mutex},
-        time::Duration,
-    };
+    use std::{ops::ControlFlow, time::Duration};
 
     use anyhow::Result;
     use tokio::sync::mpsc;
@@ -283,6 +301,18 @@ mod tests {
         let out = rgb_to_i420(&vec![0u8; 8 * 6 * 3], 8, 6);
         // I420 = Y(8*6) + U(4*3) + V(4*3) = 48 + 12 + 12 = 72 = 8*6*3/2
         assert_eq!(out.len(), 8 * 6 * 3 / 2);
+    }
+
+    #[test]
+    fn i420_minimum_2x2_frame() {
+        // Smallest valid I420 block: 2×2 pixels.
+        let rgb = vec![128u8; 2 * 2 * 3];
+        let out = rgb_to_i420(&rgb, 2, 2);
+        assert_eq!(out.len(), 2 * 2 * 3 / 2, "output size");
+        // All values should be within I420 range.
+        for &b in &out {
+            assert!(b <= 240, "I420 value {b} out of range");
+        }
     }
 
     #[test]
@@ -321,7 +351,9 @@ mod tests {
 
     #[test]
     fn i420_pure_red() {
-        // R=255, G=0, B=0  →  Y≈81, U≈90, V≈240  (approximate)
+        // R=255, G=0, B=0 uniform image: all 4 pixels in each 2×2 block are the
+        // same colour, so averaging doesn't change the chroma result.
+        // BT.601: Y=82, Cb=90, Cr=240
         let mut rgb = vec![0u8; 4 * 4 * 3];
         for p in rgb.chunks_exact_mut(3) {
             p[0] = 255;
@@ -329,7 +361,6 @@ mod tests {
         let out = rgb_to_i420(&rgb, 4, 4);
         let y_size = 16usize;
         let uv_size = 4usize;
-        // BT.601 for pure red: Y=82, Cb=90, Cr=240
         // ((66*255 + 128) >> 8) + 16 = (16958 >> 8) + 16 = 66 + 16 = 82
         for &y in &out[..y_size] {
             assert_eq!(y, 82, "Y for red");
@@ -344,16 +375,20 @@ mod tests {
 
     // ── dispatch loop ─────────────────────────────────────────────────────────
 
+    /// A sink that forwards every received frame to an async channel and breaks
+    /// after `limit` frames.  Using a channel lets tests wait for exact frame
+    /// counts without sleeping.
     struct CollectSink {
-        collected: Arc<Mutex<Vec<VideoFrame>>>,
+        tx: tokio::sync::mpsc::UnboundedSender<VideoFrame>,
         limit: usize,
+        count: usize,
     }
 
     impl VideoSink for CollectSink {
         fn push_frame(&mut self, frame: &VideoFrame) -> Result<ControlFlow<(), ()>> {
-            let mut v = self.collected.lock().unwrap();
-            v.push(frame.clone());
-            if v.len() >= self.limit {
+            self.count += 1;
+            self.tx.send(frame.clone()).ok();
+            if self.count >= self.limit {
                 Ok(ControlFlow::Break(()))
             } else {
                 Ok(ControlFlow::Continue(()))
@@ -366,9 +401,9 @@ mod tests {
         let (frame_tx, frame_rx) = mpsc::channel(8);
         let capture = VideoCapture::new_for_test(frame_rx, 4, 4, 30);
 
-        let collected = Arc::new(Mutex::new(Vec::new()));
+        let (sink_tx, mut sink_rx) = tokio::sync::mpsc::unbounded_channel();
         capture
-            .add_sink(CollectSink { collected: Arc::clone(&collected), limit: 3 })
+            .add_sink(CollectSink { tx: sink_tx, limit: 3, count: 0 })
             .await
             .unwrap();
 
@@ -377,8 +412,12 @@ mod tests {
             frame_tx.send(frame.clone()).await.unwrap();
         }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(collected.lock().unwrap().len(), 3);
+        for _ in 0..3 {
+            tokio::time::timeout(Duration::from_secs(2), sink_rx.recv())
+                .await
+                .expect("timeout waiting for frame from dispatch")
+                .expect("channel closed unexpectedly");
+        }
     }
 
     #[tokio::test]
@@ -386,10 +425,10 @@ mod tests {
         let (frame_tx, frame_rx) = mpsc::channel(8);
         let capture = VideoCapture::new_for_test(frame_rx, 4, 4, 30);
 
-        let collected = Arc::new(Mutex::new(Vec::new()));
-        // sink breaks after 2 frames
+        let (sink_tx, mut sink_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Sink breaks after 2 frames.
         capture
-            .add_sink(CollectSink { collected: Arc::clone(&collected), limit: 2 })
+            .add_sink(CollectSink { tx: sink_tx, limit: 2, count: 0 })
             .await
             .unwrap();
 
@@ -398,8 +437,18 @@ mod tests {
             frame_tx.send(frame.clone()).await.unwrap();
         }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(collected.lock().unwrap().len(), 2, "no frames after break");
+        // Wait for exactly 2 frames.
+        for _ in 0..2 {
+            tokio::time::timeout(Duration::from_secs(2), sink_rx.recv())
+                .await
+                .expect("timeout")
+                .expect("channel closed");
+        }
+
+        // Give the dispatch loop time to process the remaining 3 frames, then
+        // verify the (now-removed) sink received nothing extra.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(sink_rx.try_recv().is_err(), "no frames expected after break");
     }
 
     #[tokio::test]
@@ -407,18 +456,19 @@ mod tests {
         let (frame_tx, frame_rx) = mpsc::channel(8);
         let capture = VideoCapture::new_for_test(frame_rx, 4, 4, 30);
 
-        let c1 = Arc::new(Mutex::new(Vec::new()));
-        let c2 = Arc::new(Mutex::new(Vec::new()));
+        let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
         capture
-            .add_sink(CollectSink { collected: Arc::clone(&c1), limit: 99 })
+            .add_sink(CollectSink { tx: tx1, limit: 99, count: 0 })
             .await
             .unwrap();
         capture
-            .add_sink(CollectSink { collected: Arc::clone(&c2), limit: 99 })
+            .add_sink(CollectSink { tx: tx2, limit: 99, count: 0 })
             .await
             .unwrap();
 
-        // Give the sink registrations time to be processed
+        // Give the dispatch loop time to drain both sink registrations before
+        // sending frames, so neither sink misses a frame due to a race.
         tokio::time::sleep(Duration::from_millis(20)).await;
 
         let frame = VideoFrame::new_black(4, 4);
@@ -426,9 +476,12 @@ mod tests {
             frame_tx.send(frame.clone()).await.unwrap();
         }
 
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(c1.lock().unwrap().len(), 3);
-        assert_eq!(c2.lock().unwrap().len(), 3);
+        for _ in 0..3 {
+            tokio::time::timeout(Duration::from_secs(2), rx1.recv())
+                .await.expect("timeout rx1").expect("closed");
+            tokio::time::timeout(Duration::from_secs(2), rx2.recv())
+                .await.expect("timeout rx2").expect("closed");
+        }
     }
 
     // ── VP8 pipeline ──────────────────────────────────────────────────────────
@@ -448,16 +501,21 @@ mod tests {
         let mut track = capture.create_vp8_track(500).await.unwrap();
 
         let frame = VideoFrame::new_black(128, 128);
-        // Push several frames; the encoder emits at least a keyframe after a few.
         for _ in 0..5 {
             frame_tx.send(frame.clone()).await.unwrap();
         }
 
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
+        // Poll with a hard timeout rather than an arbitrary fixed sleep.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let mut count = 0;
-        while track.try_recv().is_ok() {
-            count += 1;
+        while tokio::time::Instant::now() < deadline {
+            while track.try_recv().is_ok() {
+                count += 1;
+            }
+            if count > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
         assert!(count > 0, "VP8 track should have encoded frames");
     }

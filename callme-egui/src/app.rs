@@ -323,6 +323,19 @@ impl AppState {
     }
 }
 
+/// Send `event` on `tx` and invoke `callback` if present.
+/// Mirrors [`Worker::emit`] but works inside spawned closures that lack `&self`.
+async fn emit_event(
+    tx: &async_channel::Sender<Event>,
+    callback: &Option<UpdateCallback>,
+    event: Event,
+) {
+    tx.send(event).await.ok();
+    if let Some(cb) = callback {
+        cb();
+    }
+}
+
 fn fmt_node_id(text: &str) -> RichText {
     let text = format!("{text}…");
     egui::RichText::new(text)
@@ -528,10 +541,7 @@ impl Worker {
                         TrackKind::Audio => audio_context.play_track(remote_track).await?,
                         TrackKind::Video => {
                             #[cfg(feature = "video")]
-                            {
-                                event_tx.send(Event::VideoTrack(node_id, remote_track)).await.ok();
-                                if let Some(cb) = &update_callback { cb(); }
-                            }
+                            emit_event(&event_tx, &update_callback, Event::VideoTrack(node_id, remote_track)).await;
                             #[cfg(not(feature = "video"))]
                             warn!("received video track but video feature is disabled");
                         }
@@ -576,10 +586,7 @@ impl Worker {
                         }
                         TrackKind::Video => {
                             #[cfg(feature = "video")]
-                            {
-                                event_tx.send(Event::VideoTrack(node_id, remote_track)).await.ok();
-                                if let Some(cb) = &update_callback { cb(); }
-                            }
+                            emit_event(&event_tx, &update_callback, Event::VideoTrack(node_id, remote_track)).await;
                             #[cfg(not(feature = "video"))]
                             warn!("received video track but video feature is disabled");
                         }
