@@ -4,7 +4,7 @@ use anyhow::Result;
 use bytes::Bytes;
 use iroh_roq::rtp::{
     codecs::vp8::{Vp8Packet, Vp8Payloader},
-    packetizer::{new_packetizer, Packetizer},
+    packetizer::{Packetizer, new_packetizer},
     sequence::new_random_sequencer,
 };
 use webrtc_media::io::sample_builder::SampleBuilder;
@@ -12,8 +12,8 @@ use webrtc_media::io::sample_builder::SampleBuilder;
 use callme::{
     codec::VP8_RTP_CLOCK_RATE,
     video::{
-        vp8::{Vp8Decoder, Vp8Encoder},
         VideoFrame,
+        vp8::{Vp8Decoder, Vp8Encoder},
     },
 };
 
@@ -57,8 +57,7 @@ fn vp8_encode_decode_roundtrip() -> Result<()> {
         sequencer,
         VP8_RTP_CLOCK_RATE,
     );
-    let mut sample_builder =
-        SampleBuilder::new(10, Vp8Packet::default(), VP8_RTP_CLOCK_RATE);
+    let mut sample_builder = SampleBuilder::new(10, Vp8Packet::default(), VP8_RTP_CLOCK_RATE);
 
     let mut decoded_frame: Option<VideoFrame> = None;
     for payload in &encoded_payloads {
@@ -77,7 +76,9 @@ fn vp8_encode_decode_roundtrip() -> Result<()> {
     assert_eq!(decoded.width, width, "decoded width mismatch");
     assert_eq!(decoded.height, height, "decoded height mismatch");
     assert_eq!(
-        decoded.data.len(),
+        decoded
+            .data
+            .len(),
         (width * height * 3 / 2) as usize,
         "decoded data length mismatch"
     );

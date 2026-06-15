@@ -1,7 +1,7 @@
 use anyhow::Result;
 use iroh_roq::{
-    rtp::{self, codecs::opus::OpusPacket, packetizer::Depacketizer},
     ReceiveFlow,
+    rtp::{self, codecs::opus::OpusPacket, packetizer::Depacketizer},
 };
 use tokio::sync::{broadcast, oneshot};
 use tracing::{trace, warn};
@@ -17,21 +17,42 @@ pub(crate) struct RtpMediaTrackReceiver {
 
 impl RtpMediaTrackReceiver {
     pub async fn run(mut self) {
-        if let Err(err) = self.run_inner().await {
-            let id: u64 = self.recv_flow.flow_id().into();
+        if let Err(err) = self
+            .run_inner()
+            .await
+        {
+            let id: u64 = self
+                .recv_flow
+                .flow_id()
+                .into();
             warn!(%id, "rtp receive flow failed: {err}");
-            if let Some(tx) = self.init_tx.take() {
-                tx.send(Err(err)).ok();
+            if let Some(tx) = self
+                .init_tx
+                .take()
+            {
+                tx.send(Err(err))
+                    .ok();
             }
         }
     }
 
     async fn run_inner(&mut self) -> Result<()> {
-        let first_packet = self.recv_flow.read_rtp().await?;
-        let codec = Codec::try_from_rtp_payload_type(first_packet.header.payload_type)
-            .ok_or_else(|| anyhow::anyhow!("unsupported codec type"))?;
-        if let Some(tx) = self.init_tx.take() {
-            tx.send(Ok(codec)).ok();
+        let first_packet = self
+            .recv_flow
+            .read_rtp()
+            .await?;
+        let codec = Codec::try_from_rtp_payload_type(
+            first_packet
+                .header
+                .payload_type,
+        )
+        .ok_or_else(|| anyhow::anyhow!("unsupported codec type"))?;
+        if let Some(tx) = self
+            .init_tx
+            .take()
+        {
+            tx.send(Ok(codec))
+                .ok();
         }
         match codec {
             Codec::Opus { .. } => {
@@ -68,9 +89,15 @@ impl RtpMediaTrackReceiver {
         loop {
             trace!(
                 "recv packet len {} seq {} ts {}",
-                packet.payload.len(),
-                packet.header.sequence_number,
-                packet.header.timestamp,
+                packet
+                    .payload
+                    .len(),
+                packet
+                    .header
+                    .sequence_number,
+                packet
+                    .header
+                    .timestamp,
             );
             sample_builder.push(packet);
             if let Some(frame) = sample_builder.pop() {
@@ -88,10 +115,14 @@ impl RtpMediaTrackReceiver {
                     skipped_frames: Some(prev_dropped_packets as u32),
                     skipped_samples: None,
                 };
-                self.track_sender.send(frame)?;
+                self.track_sender
+                    .send(frame)?;
             }
 
-            packet = self.recv_flow.read_rtp().await?;
+            packet = self
+                .recv_flow
+                .read_rtp()
+                .await?;
         }
     }
 }

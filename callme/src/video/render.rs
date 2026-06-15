@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tokio::sync::broadcast::error::TryRecvError;
 use tracing::{info, trace, warn};
 
@@ -24,7 +24,10 @@ impl MediaTrackVp8Decoder {
             Codec::Vp8 => {}
             other => bail!("MediaTrackVp8Decoder requires VP8 codec, got {other:?}"),
         }
-        Ok(Self { track, decoder: Vp8Decoder::new()? })
+        Ok(Self {
+            track,
+            decoder: Vp8Decoder::new()?,
+        })
     }
 }
 
@@ -35,7 +38,14 @@ impl VideoSource for MediaTrackVp8Decoder {
     /// - `Continue(None)` — no frame is buffered; call again after a short wait.
     /// - `Break(())` — the track is closed and no more frames will arrive.
     fn next_frame(&mut self) -> Result<ControlFlow<(), Option<VideoFrame>>> {
-        let MediaFrame { payload, skipped_frames, .. } = match self.track.try_recv() {
+        let MediaFrame {
+            payload,
+            skipped_frames,
+            ..
+        } = match self
+            .track
+            .try_recv()
+        {
             Ok(mf) => mf,
             Err(TryRecvError::Empty) => return Ok(ControlFlow::Continue(None)),
             Err(TryRecvError::Lagged(n)) => {
@@ -53,7 +63,10 @@ impl VideoSource for MediaTrackVp8Decoder {
         }
 
         trace!("VP8 decode {} bytes", payload.len());
-        match self.decoder.decode(&payload)? {
+        match self
+            .decoder
+            .decode(&payload)?
+        {
             Some(frame) => Ok(ControlFlow::Continue(Some(frame))),
             None => Ok(ControlFlow::Continue(None)),
         }
@@ -144,7 +157,11 @@ mod tests {
         let mut data = vec![0u8; y_size + 2 * uv_size];
         data[..y_size].fill(235);
         data[y_size..].fill(128);
-        let frame = VideoFrame { width: w, height: h, data };
+        let frame = VideoFrame {
+            width: w,
+            height: h,
+            data,
+        };
 
         let rgba = i420_to_rgba(&frame);
         for chunk in rgba.chunks_exact(4) {
@@ -163,7 +180,11 @@ mod tests {
         let grey: u8 = 128;
         let rgb = vec![grey; (w * h * 3) as usize];
         let i420 = rgb_to_i420(&rgb, w, h);
-        let frame = VideoFrame { width: w, height: h, data: i420 };
+        let frame = VideoFrame {
+            width: w,
+            height: h,
+            data: i420,
+        };
         let rgba = i420_to_rgba(&frame);
 
         for chunk in rgba.chunks_exact(4) {
@@ -171,9 +192,21 @@ mod tests {
             let g = chunk[1] as i32;
             let b = chunk[2] as i32;
             // Allow ±8 for rounding losses in the BT.601 integer approximation.
-            assert!((r - grey as i32).abs() <= 8, "R off by {}", (r - grey as i32).abs());
-            assert!((g - grey as i32).abs() <= 8, "G off by {}", (g - grey as i32).abs());
-            assert!((b - grey as i32).abs() <= 8, "B off by {}", (b - grey as i32).abs());
+            assert!(
+                (r - grey as i32).abs() <= 8,
+                "R off by {}",
+                (r - grey as i32).abs()
+            );
+            assert!(
+                (g - grey as i32).abs() <= 8,
+                "G off by {}",
+                (g - grey as i32).abs()
+            );
+            assert!(
+                (b - grey as i32).abs() <= 8,
+                "B off by {}",
+                (b - grey as i32).abs()
+            );
         }
     }
 
@@ -182,11 +215,17 @@ mod tests {
     #[test]
     fn rejects_non_vp8_track() {
         use crate::{
-            codec::{opus::OpusChannels, Codec},
+            codec::{Codec, opus::OpusChannels},
             rtc::{MediaTrack, TrackKind},
         };
         let (_, rx) = tokio::sync::broadcast::channel(4);
-        let track = MediaTrack::new(rx, Codec::Opus { channels: OpusChannels::Stereo }, TrackKind::Audio);
+        let track = MediaTrack::new(
+            rx,
+            Codec::Opus {
+                channels: OpusChannels::Stereo,
+            },
+            TrackKind::Audio,
+        );
         assert!(MediaTrackVp8Decoder::new(track).is_err());
     }
 
@@ -202,7 +241,9 @@ mod tests {
         let frame = VideoFrame::new_black(width, height);
         // Push enough frames for the VP8 encoder to emit at least one keyframe.
         for _ in 0..5 {
-            let _ = encoder.encode_frame(&frame).unwrap();
+            let _ = encoder
+                .encode_frame(&frame)
+                .unwrap();
         }
 
         // Give the broadcast channel time to buffer.
@@ -210,7 +251,10 @@ mod tests {
 
         let mut got_frame = false;
         for _ in 0..20 {
-            match decoder.next_frame().unwrap() {
+            match decoder
+                .next_frame()
+                .unwrap()
+            {
                 ControlFlow::Continue(Some(f)) => {
                     assert_eq!(f.width, width);
                     assert_eq!(f.height, height);
@@ -232,14 +276,19 @@ mod tests {
         // Close the encoder/track immediately by dropping.
         let frame = VideoFrame::new_black(32, 32);
         for _ in 0..3 {
-            let _ = encoder.encode_frame(&frame).unwrap();
+            let _ = encoder
+                .encode_frame(&frame)
+                .unwrap();
         }
         drop(encoder);
 
         // Drain all frames then expect Break.
         let mut saw_break = false;
         for _ in 0..100 {
-            match decoder.next_frame().unwrap() {
+            match decoder
+                .next_frame()
+                .unwrap()
+            {
                 ControlFlow::Break(()) => {
                     saw_break = true;
                     break;
@@ -276,7 +325,10 @@ mod tests {
 
         let mut saw_continue_none = false;
         for _ in 0..15 {
-            match decoder.next_frame().unwrap() {
+            match decoder
+                .next_frame()
+                .unwrap()
+            {
                 ControlFlow::Continue(None) => {
                     saw_continue_none = true;
                     break;
@@ -285,6 +337,9 @@ mod tests {
                 ControlFlow::Break(()) => break,
             }
         }
-        assert!(saw_continue_none, "lagged decoder should return Continue(None), not an error");
+        assert!(
+            saw_continue_none,
+            "lagged decoder should return Continue(None), not an error"
+        );
     }
 }

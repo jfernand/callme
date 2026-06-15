@@ -1,8 +1,8 @@
 use callme::{
+    NodeId,
     audio::{AudioConfig, AudioContext},
     net,
-    rtc::{handle_connection_with_audio_context, RtcConnection, RtcProtocol},
-    NodeId,
+    rtc::{RtcConnection, RtcProtocol, handle_connection_with_audio_context},
 };
 use clap::Parser;
 use dialoguer::Confirm;
@@ -15,20 +15,21 @@ use {
     callme::{
         rtc::TrackKind,
         video::{
-            capture::{CameraConfig, VideoCapture},
-            render::{i420_to_rgba, MediaTrackVp8Decoder},
             VideoFrame, VideoSource,
+            capture::{CameraConfig, VideoCapture},
+            file_capture::{FileConfig, FileVideoCapture},
+            render::{MediaTrackVp8Decoder, i420_to_rgba},
         },
     },
     crossterm::{cursor, execute, terminal},
-    std::io::{stdout, Write},
+    std::io::{Write, stdout},
     std::ops::ControlFlow,
     std::sync::mpsc,
     std::time::Duration,
 };
 
-// (video_enabled, camera_index, bitrate_kbps, ascii_mode)
-type VideoCfg = (bool, u32, u32, bool);
+// (video_enabled, camera_index, bitrate_kbps, ascii_mode, video_file_path)
+type VideoCfg = (bool, u32, u32, bool, Option<String>);
 
 #[derive(Parser, Debug)]
 #[command(about = "Call me iroh", long_about = None)]
@@ -58,6 +59,11 @@ struct Args {
     #[cfg(feature = "video")]
     #[arg(long)]
     ascii: bool,
+    /// Send video from a file instead of a camera.  Requires ffmpeg on PATH.
+    /// The file loops continuously for the duration of the call.
+    #[cfg(feature = "video")]
+    #[arg(long, value_name = "PATH")]
+    video_file: Option<String>,
     #[clap(subcommand)]
     command: Command,
 }
@@ -65,9 +71,16 @@ struct Args {
 impl Args {
     fn video_cfg(&self) -> VideoCfg {
         #[cfg(feature = "video")]
-        return (self.video, self.camera, self.video_bitrate, self.ascii);
+        return (
+            self.video,
+            self.camera,
+            self.video_bitrate,
+            self.ascii,
+            self.video_file
+                .clone(),
+        );
         #[cfg(not(feature = "video"))]
-        (false, 0, 500, false)
+        (false, 0, 500, false, None)
     }
 }
 
@@ -102,8 +115,12 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let audio_config = AudioConfig {
-        input_device: args.input_device.clone(),
-        output_device: args.output_device.clone(),
+        input_device: args
+            .input_device
+            .clone(),
+        output_device: args
+            .output_device
+            .clone(),
         processing_enabled: !args.disable_processing,
     };
     // Extract before the match so the command destructure can't invalidate it.
@@ -125,23 +142,30 @@ async fn main() -> anyhow::Result<()> {
 
                 let audio_ctx = AudioContext::new(audio_config).await?;
 
-                while let Some(conn) = proto.accept().await? {
+                while let Some(conn) = proto
+                    .accept()
+                    .await?
+                {
                     if !many {
                         handle_connection(audio_ctx, conn, vcfg).await;
                         break;
                     } else {
-                        let peer = conn.transport().remote_node_id()?.fmt_short();
+                        let peer = conn
+                            .transport()
+                            .remote_node_id()?
+                            .fmt_short();
                         let accept =
                             auto || confirm(format!("Incoming call from {peer}. Accept?")).await;
                         if accept {
                             n0_future::task::spawn(handle_connection(
                                 audio_ctx.clone(),
                                 conn,
-                                vcfg,
+                                vcfg.clone(),
                             ));
                         } else {
                             info!("reject connection from {peer}");
-                            conn.transport().close(0u32.into(), b"bye");
+                            conn.transport()
+                                .close(0u32.into(), b"bye");
                         }
                     }
                 }
@@ -158,9 +182,12 @@ async fn main() -> anyhow::Result<()> {
                     info!("connecting to {}", node_id.fmt_short());
                     let audio_ctx = audio_ctx.clone();
                     let proto = proto.clone();
+                    let vcfg = vcfg.clone();
                     join_set.spawn(async move {
                         let fut = async {
-                            let conn = proto.connect(node_id).await?;
+                            let conn = proto
+                                .connect(node_id)
+                                .await?;
                             info!("established connection to {}", node_id.fmt_short());
                             handle_connection(audio_ctx, conn, vcfg).await;
                             anyhow::Ok(())
@@ -169,7 +196,10 @@ async fn main() -> anyhow::Result<()> {
                     });
                 }
 
-                while let Some(res) = join_set.join_next().await {
+                while let Some(res) = join_set
+                    .join_next()
+                    .await
+                {
                     let (node_id, res) = res.expect("task panicked");
                     if let Err(err) = res {
                         warn!("failed to connect to {}: {err:?}", node_id.fmt_short())
@@ -181,10 +211,16 @@ async fn main() -> anyhow::Result<()> {
                 let mode = mode.unwrap_or_default();
                 println!("start feedback loop for 5 seconds (mode {mode:?}");
                 match mode {
-                    FeedbackMode::Raw => ctx.feedback_raw().await?,
-                    FeedbackMode::Encoded => ctx.feedback_encoded().await?,
+                    FeedbackMode::Raw => {
+                        ctx.feedback_raw()
+                            .await?
+                    }
+                    FeedbackMode::Encoded => {
+                        ctx.feedback_encoded()
+                            .await?
+                    }
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(Duration::from_secs(5)).await;
                 println!("closing");
             }
             Command::ListDevices => {
@@ -198,7 +234,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         res = fut => res?,
         _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutting down");
+            info!("shutting down");
             if let Some(endpoint) = endpoint_shutdown {
                 endpoint.close().await;
             }
@@ -208,13 +244,17 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn handle_connection(audio_ctx: AudioContext, conn: RtcConnection, vcfg: VideoCfg) {
-    let peer = conn.transport().remote_node_id().unwrap().fmt_short();
+    let peer = conn
+        .transport()
+        .remote_node_id()
+        .unwrap()
+        .fmt_short();
 
     #[cfg(feature = "video")]
     if vcfg.0 {
-        let (_, camera, bitrate, ascii) = vcfg;
+        let (_, camera, bitrate, ascii, video_file) = vcfg;
         if let Err(err) =
-            handle_connection_with_video(audio_ctx, conn, camera, bitrate, ascii).await
+            handle_connection_with_video(audio_ctx, conn, camera, bitrate, ascii, video_file).await
         {
             error!("connection from {peer} closed with error: {err:?}");
         } else {
@@ -231,9 +271,14 @@ async fn handle_connection(audio_ctx: AudioContext, conn: RtcConnection, vcfg: V
 }
 
 async fn confirm(msg: String) -> bool {
-    tokio::task::spawn_blocking(move || Confirm::new().with_prompt(msg).interact().unwrap())
-        .await
-        .unwrap()
+    tokio::task::spawn_blocking(move || {
+        Confirm::new()
+            .with_prompt(msg)
+            .interact()
+            .unwrap()
+    })
+    .await
+    .unwrap()
 }
 
 // ── video connection handler ──────────────────────────────────────────────────
@@ -245,37 +290,79 @@ async fn handle_connection_with_video(
     camera_index: u32,
     video_bitrate_kbps: u32,
     ascii: bool,
+    video_file: Option<String>,
 ) -> anyhow::Result<()> {
     // Frame channel: decoder tasks → display (capacity = 1 s at 30 fps).
     let (frame_tx, frame_rx) = mpsc::sync_channel::<VideoFrame>(30);
 
-    // Try to open the camera and send a video track.
-    // Store the capture handle so background threads stay alive for the call.
-    let _capture = match VideoCapture::build(CameraConfig {
-        index: camera_index,
-        ..Default::default()
-    })
-    .await
-    {
-        Ok(capture) => {
-            match capture.create_vp8_track(video_bitrate_kbps).await {
-                Ok(track) => {
-                    conn.send_track(track).await?;
-                    info!("video track sent (camera {camera_index})");
+    // Open the local video source (file or camera) and send a VP8 track.
+    // Both capture handles are kept alive here so their background threads run
+    // for the duration of the call.  Exactly one will be Some.
+    let _file_capture: Option<FileVideoCapture>;
+    let _camera_capture: Option<VideoCapture>;
+
+    if let Some(path) = video_file {
+        _camera_capture = None;
+        _file_capture = match FileVideoCapture::build(FileConfig {
+            path: std::path::PathBuf::from(path),
+            looping: true,
+        })
+        .await
+        {
+            Ok(capture) => {
+                match capture
+                    .create_vp8_track(video_bitrate_kbps)
+                    .await
+                {
+                    Ok(track) => {
+                        conn.send_track(track)
+                            .await?;
+                        info!("video track sent (file)");
+                    }
+                    Err(e) => warn!("failed to create VP8 track from file: {e}"),
                 }
-                Err(e) => warn!("failed to create VP8 track: {e}"),
+                Some(capture)
             }
-            Some(capture)
-        }
-        Err(e) => {
-            warn!("failed to open camera {camera_index}: {e} — continuing without local video");
-            None
-        }
+            Err(e) => {
+                warn!("failed to open video file: {e} — continuing without local video");
+                None
+            }
+        };
+    } else {
+        _file_capture = None;
+        _camera_capture = match VideoCapture::build(CameraConfig {
+            index: camera_index,
+            ..Default::default()
+        })
+        .await
+        {
+            Ok(capture) => {
+                match capture
+                    .create_vp8_track(video_bitrate_kbps)
+                    .await
+                {
+                    Ok(track) => {
+                        conn.send_track(track)
+                            .await?;
+                        info!("video track sent (camera {camera_index})");
+                    }
+                    Err(e) => warn!("failed to create VP8 track: {e}"),
+                }
+                Some(capture)
+            }
+            Err(e) => {
+                warn!("failed to open camera {camera_index}: {e} — continuing without local video");
+                None
+            }
+        };
     };
 
     // Send audio track.
-    let audio_track = audio_ctx.capture_track().await?;
-    conn.send_track(audio_track).await?;
+    let audio_track = audio_ctx
+        .capture_track()
+        .await?;
+    conn.send_track(audio_track)
+        .await?;
     info!("audio track sent");
 
     // Spawn the display on a blocking thread.  Waits for the first frame before
@@ -288,10 +375,15 @@ async fn handle_connection_with_video(
 
     // Receive and route incoming tracks.
     let conn_result = async {
-        while let Some(remote_track) = conn.recv_track().await? {
+        while let Some(remote_track) = conn
+            .recv_track()
+            .await?
+        {
             match remote_track.kind() {
                 TrackKind::Audio => {
-                    audio_ctx.play_track(remote_track).await?;
+                    audio_ctx
+                        .play_track(remote_track)
+                        .await?;
                 }
                 TrackKind::Video => {
                     spawn_video_decoder(remote_track, frame_tx.clone());
@@ -324,7 +416,8 @@ fn spawn_video_decoder(track: callme::rtc::MediaTrack, tx: mpsc::SyncSender<Vide
             match decoder.next_frame() {
                 Ok(ControlFlow::Continue(Some(frame))) => {
                     // Non-blocking: drop the frame if the display is falling behind.
-                    tx.try_send(frame).ok();
+                    tx.try_send(frame)
+                        .ok();
                 }
                 Ok(ControlFlow::Continue(None)) => {
                     // No frame ready yet — yield so we don't busy-spin.
@@ -366,7 +459,10 @@ fn run_video_window(frame_rx: mpsc::Receiver<VideoFrame>) {
         "callme — remote video",
         win_w,
         win_h,
-        WindowOptions { resize: true, ..Default::default() },
+        WindowOptions {
+            resize: true,
+            ..Default::default()
+        },
     ) {
         Ok(w) => w,
         Err(e) => {
@@ -398,7 +494,10 @@ fn run_video_window(frame_rx: mpsc::Receiver<VideoFrame>) {
             pixels = i420_to_minifb(&frame);
         }
 
-        if window.update_with_buffer(&pixels, win_w, win_h).is_err() {
+        if window
+            .update_with_buffer(&pixels, win_w, win_h)
+            .is_err()
+        {
             break;
         }
     }

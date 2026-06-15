@@ -9,17 +9,22 @@ cargo run --release
 ```
 
 On Linux, you need ALSA and DBUS development headers:
+
 ```
 apt-get install libasound2-dev libdbus-1-dev libtool automake
 ```
 
-The crate includes a C dependency for echo cancellation (`webrtc-audio-processing`) that needs C build tools to be installed.
+The crate includes a C dependency for echo cancellation (`webrtc-audio-processing`) that needs C build tools to be
+installed.
 On macOS these can be installed with homebrew:
+
 ```
 brew install automake libtool
 ```
 
-On Windows, or if the build fails, you can disable the audio processing entirely. You should only use callme with headphones then.
+On Windows, or if the build fails, you can disable the audio processing entirely. You should only use callme with
+headphones then.
+
 ```
 cargo run --release --no-default-features
 ```
@@ -49,21 +54,28 @@ export PATH=$ANDROID_HOME/platform-tools:$TOOLCHAIN/bin:$PATH
 export CARGO_APK_RELEASE_KEYSTORE_PASSWORD="android"
 export CARGO_APK_RELEASE_KEYSTORE=$HOME/.android/debug.keystore
 ```
-You can put those into a file and then do `source android-vars.sh` in your terminal before following the rest of the guide.
+
+You can put those into a file and then do `source android-vars.sh` in your terminal before following the rest of the
+guide.
 Note: You should only do android builds in this terminal then - e.g. Wasm builds might fail with the changed `PATH`.
 
-Now, on your phone, go to *Settings* -> *System* -> *Developer settings* and enable *Wireless debugging* and click on *Pair device with pairing code*
+Now, on your phone, go to *Settings* -> *System* -> *Developer settings* and enable *Wireless debugging* and click on
+*Pair device with pairing code*
 Make sure your computer and phone are in the same WIFI.
 
 Now run
+
 ```
 adb pair IP:Port
 ```
+
 with IP and port as printed on the pairing screen on the phone.
 and afterwards
+
 ```
 adb connect IP:Port
 ```
+
 with the IP and port as printed on the Wireless debugging screen.
 
 And now, finally:
@@ -84,9 +96,9 @@ This should now run the GUI directly on your phone!
 * Accept license `sudo xcodebuild -license`
 * Install cargo-bundle `cargo install cargo-bundle`
 * Install the required target:
-   * `rustup target add aarch64-apple-ios` for modern iOS devices
-   * `rustup target add aarch64-apple-ios-sim` for simulator on modern machines
-   * `rustup target add x86_64-apple-ios` for old iOS devices or simulator on old machines
+    * `rustup target add aarch64-apple-ios` for modern iOS devices
+    * `rustup target add aarch64-apple-ios-sim` for simulator on modern machines
+    * `rustup target add x86_64-apple-ios` for old iOS devices or simulator on old machines
 * Install python 3.11 or newer
 * Run the build scripts `./build-ios.py` - it will print a help text with supported options
 

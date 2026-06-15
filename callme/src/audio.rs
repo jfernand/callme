@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use anyhow::Result;
-use bytes::Bytes;
 use cpal::{ChannelCount, SampleRate};
 
 use self::{
@@ -58,33 +57,56 @@ impl AudioContext {
         #[cfg(not(feature = "audio-processing"))]
         let processor = WebrtcAudioProcessor;
 
-        let capture =
-            AudioCapture::build(&host, config.input_device.as_deref(), processor.clone()).await?;
-        let playback =
-            AudioPlayback::build(&host, config.output_device.as_deref(), processor.clone()).await?;
+        let capture = AudioCapture::build(
+            &host,
+            config
+                .input_device
+                .as_deref(),
+            processor.clone(),
+        )
+        .await?;
+        let playback = AudioPlayback::build(
+            &host,
+            config
+                .output_device
+                .as_deref(),
+            processor.clone(),
+        )
+        .await?;
         Ok(Self { playback, capture })
     }
 
     pub async fn capture_track(&self) -> Result<MediaTrack> {
-        self.capture.create_opus_track().await
+        self.capture
+            .create_opus_track()
+            .await
     }
 
     pub async fn play_track(&self, track: MediaTrack) -> Result<()> {
-        self.playback.add_track(track).await?;
+        self.playback
+            .add_track(track)
+            .await?;
         Ok(())
     }
 
     pub async fn feedback_encoded(&self) -> Result<()> {
-        let track = self.capture_track().await?;
-        self.play_track(track).await?;
+        let track = self
+            .capture_track()
+            .await?;
+        self.play_track(track)
+            .await?;
         Ok(())
     }
 
     pub async fn feedback_raw(&self) -> Result<()> {
         let buffer_size = ENGINE_FORMAT.sample_count(DURATION_20MS * 16);
         let (sink, source) = ringbuf_pipe(buffer_size);
-        self.capture.add_sink(sink).await?;
-        self.playback.add_source(source).await?;
+        self.capture
+            .add_sink(sink)
+            .await?;
+        self.playback
+            .add_source(source)
+            .await?;
         Ok(())
     }
 }
@@ -94,8 +116,8 @@ mod ringbuf_pipe {
 
     use anyhow::Result;
     use ringbuf::{
-        traits::{Consumer as _, Observer, Producer as _, Split},
         HeapCons as Consumer, HeapProd as Producer,
+        traits::{Consumer as _, Observer, Producer as _, Split},
     };
     use tracing::warn;
 
@@ -111,7 +133,9 @@ mod ringbuf_pipe {
 
     impl AudioSink for RingbufSink {
         fn tick(&mut self, buf: &[f32]) -> Result<ControlFlow<(), ()>> {
-            let len = self.0.push_slice(buf);
+            let len = self
+                .0
+                .push_slice(buf);
             if len < buf.len() {
                 warn!("ringbuf sink xrun: failed to send {}", buf.len() - len);
             }
@@ -121,7 +145,9 @@ mod ringbuf_pipe {
 
     impl AudioSource for RingbufSource {
         fn tick(&mut self, buf: &mut [f32]) -> Result<ControlFlow<(), usize>> {
-            let len = self.0.pop_slice(buf);
+            let len = self
+                .0
+                .pop_slice(buf);
             if len < buf.len() {
                 warn!("ringbuf source xrun: failed to recv {}", buf.len() - len);
             }
@@ -152,12 +178,19 @@ impl AudioFormat {
 
     pub fn duration_from_sample_count(&self, sample_count: usize) -> Duration {
         Duration::from_secs_f32(
-            (sample_count as f32 / self.channel_count as f32) / self.sample_rate.0 as f32,
+            (sample_count as f32 / self.channel_count as f32)
+                / self
+                    .sample_rate
+                    .0 as f32,
         )
     }
 
     pub const fn block_count(&self, duration: Duration) -> usize {
-        (self.sample_rate.0 as usize / 1000) * duration.as_millis() as usize
+        (self
+            .sample_rate
+            .0 as usize
+            / 1000)
+            * duration.as_millis() as usize
     }
 
     pub const fn sample_count(&self, duration: Duration) -> usize {

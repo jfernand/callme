@@ -1,7 +1,7 @@
 use anyhow::Result;
-use iroh::{protocol::ProtocolHandler, Endpoint, NodeAddr};
+use iroh::{Endpoint, NodeAddr, protocol::ProtocolHandler};
 use iroh_roq::ALPN;
-use n0_future::{boxed::BoxFuture, FutureExt};
+use n0_future::{FutureExt, boxed::BoxFuture};
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -17,20 +17,25 @@ pub struct RtcProtocol {
 
 impl ProtocolHandler for RtcProtocol {
     fn accept(&self, connecting: iroh::endpoint::Connecting) -> BoxFuture<Result<()>> {
-        let sender = self.sender.clone();
+        let sender = self
+            .sender
+            .clone();
         async move {
             debug!("ProtocolHandler::accept: connecting");
             let conn = connecting.await?;
             debug!("ProtocolHandler::accept: conn");
             let conn = RtcConnection::new(conn);
-            sender.send(conn).await?;
+            sender
+                .send(conn)
+                .await?;
             Ok(())
         }
         .boxed()
     }
 
     fn shutdown(&self) -> BoxFuture<()> {
-        self.shutdown_token.cancel();
+        self.shutdown_token
+            .cancel();
         async move {}.boxed()
     }
 }
@@ -60,7 +65,10 @@ impl RtcProtocol {
     }
 
     pub async fn connect(&self, node_addr: impl Into<NodeAddr>) -> Result<RtcConnection> {
-        let conn = self.endpoint.connect(node_addr, ALPN).await?;
+        let conn = self
+            .endpoint
+            .connect(node_addr, ALPN)
+            .await?;
         Ok(RtcConnection::new(conn))
     }
 }

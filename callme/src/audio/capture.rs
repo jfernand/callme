@@ -3,30 +3,30 @@ use std::{
     num::NonZeroUsize,
     ops::ControlFlow,
     sync::{
-        atomic::{AtomicBool, AtomicU64},
         Arc,
+        atomic::{AtomicBool, AtomicU64},
     },
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use bytes::{Bytes, BytesMut};
 use cpal::{
-    traits::{DeviceTrait, StreamTrait},
     Device, SampleFormat,
+    traits::{DeviceTrait, StreamTrait},
 };
 use dasp_sample::ToSample;
 use fixed_resample::{FixedResampler, ResampleQuality};
 use ringbuf::{
-    traits::{Consumer as _, Observer, Producer as _, Split},
     HeapCons as Consumer, HeapProd as Producer,
+    traits::{Consumer as _, Observer, Producer as _, Split},
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{debug, error, info, span, trace, trace_span, warn, Level};
+use tracing::{Level, debug, error, info, span, trace, trace_span, warn};
 
 use super::{
-    device::{find_device, find_input_stream_config, Direction, StreamConfigWithFormat},
-    AudioFormat, WebrtcAudioProcessor, DURATION_10MS, DURATION_20MS, ENGINE_FORMAT, SAMPLE_RATE,
+    AudioFormat, DURATION_10MS, DURATION_20MS, ENGINE_FORMAT, SAMPLE_RATE, WebrtcAudioProcessor,
+    device::{Direction, StreamConfigWithFormat, find_device, find_input_stream_config},
 };
 use crate::{
     codec::opus::MediaTrackOpusEncoder,
@@ -66,19 +66,25 @@ impl AudioCapture {
         std::thread::spawn(move || {
             if let Err(err) = audio_thread_priority::promote_current_thread_to_real_time(
                 buffer_size as u32,
-                ENGINE_FORMAT.sample_rate.0,
+                ENGINE_FORMAT
+                    .sample_rate
+                    .0,
             ) {
                 warn!("failed to set capture thread to realtime priority: {err:?}");
             }
 
             let stream = match start_capture_stream(&device, &stream_config, producer, processor) {
                 Ok(stream) => {
-                    init_tx.send(Ok(())).unwrap();
+                    init_tx
+                        .send(Ok(()))
+                        .unwrap();
                     stream
                 }
                 Err(err) => {
                     let err = err.context("failed to start capture stream");
-                    init_tx.send(Err(err)).unwrap();
+                    init_tx
+                        .send(Err(err))
+                        .unwrap();
                     return;
                 }
             };
@@ -99,7 +105,8 @@ impl AudioCapture {
 
     pub async fn create_opus_track(&self) -> Result<MediaTrack> {
         let (encoder, track) = MediaTrackOpusEncoder::new(16, ENGINE_FORMAT)?;
-        self.add_sink(encoder).await?;
+        self.add_sink(encoder)
+            .await?;
         Ok(track)
     }
 }
@@ -120,8 +127,12 @@ fn start_capture_stream(
 
     let resampler = FixedResampler::new(
         NonZeroUsize::new(ENGINE_FORMAT.channel_count as usize).unwrap(),
-        capture_format.sample_rate.0,
-        ENGINE_FORMAT.sample_rate.0,
+        capture_format
+            .sample_rate
+            .0,
+        ENGINE_FORMAT
+            .sample_rate
+            .0,
         ResampleQuality::High,
         true,
     );
@@ -165,7 +176,12 @@ fn build_capture_stream<S: dasp_sample::ToSample<f32> + cpal::SizedSample + Defa
 
     // if we change this, code in here needs to change, so let's assert it
     debug_assert_eq!(ENGINE_FORMAT.channel_count, 2);
-    debug_assert!(matches!(state.format.channel_count, 1 | 2));
+    debug_assert!(matches!(
+        state
+            .format
+            .channel_count,
+        1 | 2
+    ));
 
     // this needs to be at 10ms = 480 samples per channel, otherwise
     // the WebrtcAudioProcessor panics.
@@ -181,58 +197,89 @@ fn build_capture_stream<S: dasp_sample::ToSample<f32> + cpal::SizedSample + Defa
         move |data: &[S], info: &_| {
             let _guard = span.enter();
             let start = Instant::now();
-            let max_tick_time = state.format.duration_from_sample_count(data.len());
+            let max_tick_time = state
+                .format
+                .duration_from_sample_count(data.len());
 
             let delay = {
                 let capture_delay = info
                     .timestamp()
                     .callback
-                    .duration_since(&info.timestamp().capture)
+                    .duration_since(
+                        &info
+                            .timestamp()
+                            .capture,
+                    )
                     .unwrap_or_default();
                 let resampler_delay = Duration::from_secs_f32(
-                    state.resampler.output_delay() as f32 / ENGINE_FORMAT.sample_rate.0 as f32,
+                    state
+                        .resampler
+                        .output_delay() as f32
+                        / ENGINE_FORMAT
+                            .sample_rate
+                            .0 as f32,
                 );
                 capture_delay + resampler_delay
             };
 
             // adjust sample format and channel count.
             // we convert to ENGINE_FORMAT here which always has two channels (asserted above).
-            if state.format.channel_count == 1 {
+            if state
+                .format
+                .channel_count
+                == 1
+            {
                 input_buf.extend(
                     data.iter()
                         .map(|s| s.to_sample())
                         .flat_map(|s| [s, s].into_iter()),
                 );
-            } else if state.format.channel_count == 2 {
-                input_buf.extend(data.iter().map(|s| s.to_sample()));
+            } else if state
+                .format
+                .channel_count
+                == 2
+            {
+                input_buf.extend(
+                    data.iter()
+                        .map(|s| s.to_sample()),
+                );
             } else {
                 // checked above.
                 unreachable!()
             };
 
             // resample
-            state.resampler.process_interleaved(
-                &input_buf[..],
-                |samples| {
-                    resampled_buf.extend(samples);
-                },
-                None,
-                false,
-            );
+            state
+                .resampler
+                .process_interleaved(
+                    &input_buf[..],
+                    |samples| {
+                        resampled_buf.extend(samples);
+                    },
+                    None,
+                    false,
+                );
             input_buf.clear();
 
             // update capture delay in processor
             #[cfg(feature = "audio-processing")]
-            state.processor.set_capture_delay(delay);
+            state
+                .processor
+                .set_capture_delay(delay);
 
             // process, and push processed chunks to the producer
             let mut chunks = resampled_buf.chunks_exact_mut(processor_chunk_size);
             let mut pushed = 0;
             for chunk in &mut chunks {
                 #[cfg(feature = "audio-processing")]
-                state.processor.process_capture_frame(chunk).unwrap();
+                state
+                    .processor
+                    .process_capture_frame(chunk)
+                    .unwrap();
 
-                let n = state.producer.push_slice(chunk);
+                let n = state
+                    .producer
+                    .push_slice(chunk);
                 pushed += n;
 
                 if n < chunk.len() {
@@ -246,7 +293,9 @@ fn build_capture_stream<S: dasp_sample::ToSample<f32> + cpal::SizedSample + Defa
             }
 
             // cleanup: we need to keep the unprocessed samples that are still in the resampled buf
-            let remainder_len = chunks.into_remainder().len();
+            let remainder_len = chunks
+                .into_remainder()
+                .len();
             let end = resampled_buf.len() - remainder_len;
             resampled_buf.copy_within(end.., 0);
             resampled_buf.truncate(remainder_len);

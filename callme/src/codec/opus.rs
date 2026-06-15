@@ -1,10 +1,10 @@
 use std::{ops::ControlFlow, time::Duration};
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use bytes::{Bytes, BytesMut};
 use ringbuf::{
-    traits::{Consumer as _, Observer, Producer as _, Split},
     HeapCons as Consumer, HeapProd as Producer,
+    traits::{Consumer as _, Observer, Producer as _, Split},
 };
 use tokio::sync::broadcast::{self, error::TryRecvError};
 use tracing::{debug, info, trace};
@@ -52,8 +52,13 @@ impl MediaTrackOpusDecoder {
             other => anyhow::bail!("MediaTrackOpusDecoder requires Opus codec, got {other:?}"),
         };
         let audio_format = AudioFormat::new2(OPUS_SAMPLE_RATE, channel_count as u16);
-        let decoder =
-            opus::Decoder::new(OPUS_STREAM_PARAMS.sample_rate.0, channel_count.into()).unwrap();
+        let decoder = opus::Decoder::new(
+            OPUS_STREAM_PARAMS
+                .sample_rate
+                .0,
+            channel_count.into(),
+        )
+        .unwrap();
         let buffer_size = audio_format.sample_count(DURATION_20MS);
         let decode_buf = vec![0.; buffer_size];
         let audio_buf = vec![];
@@ -72,12 +77,26 @@ impl MediaTrackOpusDecoder {
         let block_count = self
             .decoder
             .decode_float(buf, &mut self.decode_buf, false)?;
-        let sample_count = block_count * self.audio_format.channel_count as usize;
+        let sample_count = block_count
+            * self
+                .audio_format
+                .channel_count as usize;
         let decoded = &self.decode_buf[..sample_count];
         // we need to upscale to two channels, AudioSource tick always expects stereo.
-        match self.audio_format.channel_count {
-            1 => self.audio_buf.extend(decoded.iter().flat_map(|s| [s, s])),
-            2 => self.audio_buf.extend(decoded),
+        match self
+            .audio_format
+            .channel_count
+        {
+            1 => self
+                .audio_buf
+                .extend(
+                    decoded
+                        .iter()
+                        .flat_map(|s| [s, s]),
+                ),
+            2 => self
+                .audio_buf
+                .extend(decoded),
             _ => unreachable!(),
         }
         Ok(sample_count)
@@ -88,11 +107,20 @@ impl MediaTrackOpusDecoder {
     }
 
     pub fn advance(&mut self, n: usize) {
-        if n > self.audio_buf.len() {
+        if n > self
+            .audio_buf
+            .len()
+        {
             panic!("requested advance further than buffer length");
         }
-        self.audio_buf.copy_within(n.., 0);
-        self.audio_buf.truncate(self.audio_buf.len() - n);
+        self.audio_buf
+            .copy_within(n.., 0);
+        self.audio_buf
+            .truncate(
+                self.audio_buf
+                    .len()
+                    - n,
+            );
     }
 }
 
@@ -100,7 +128,10 @@ impl AudioSource for MediaTrackOpusDecoder {
     fn tick(&mut self, buf: &mut [f32]) -> Result<ControlFlow<(), usize>> {
         // decode everything that is ready to recv'd on the track channel.
         loop {
-            let (skipped_frames, payload) = match self.track.try_recv() {
+            let (skipped_frames, payload) = match self
+                .track
+                .try_recv()
+            {
                 Ok(frame) => {
                     let MediaFrame {
                         payload,
@@ -128,7 +159,8 @@ impl AudioSource for MediaTrackOpusDecoder {
                     let sample_count = self.decode(&[])?;
                     trace!(
                         "decoder: {sample_count} samples from skipped frames, now at {}",
-                        self.audio_buf.len()
+                        self.audio_buf
+                            .len()
                     );
                 }
             }
@@ -136,7 +168,8 @@ impl AudioSource for MediaTrackOpusDecoder {
                 let sample_count = self.decode(&payload)?;
                 trace!(
                     "decoder: {sample_count} samples from payload, now at {}",
-                    self.audio_buf.len()
+                    self.audio_buf
+                        .len()
                 );
             }
         }
@@ -145,7 +178,11 @@ impl AudioSource for MediaTrackOpusDecoder {
         if self.remaining_silence_ticks > 0 {
             self.remaining_silence_ticks -= 1;
             return Ok(ControlFlow::Continue(0));
-        } else if self.audio_buf.len() < buf.len() {
+        } else if self
+            .audio_buf
+            .len()
+            < buf.len()
+        {
             self.underflows += 1;
             if self.underflows > 2 {
                 self.remaining_silence_ticks = 4;
@@ -158,13 +195,24 @@ impl AudioSource for MediaTrackOpusDecoder {
         // TODO: a very hacky way to decrease latency if we buffered too much
         if self
             .audio_format
-            .duration_from_sample_count(self.audio_buf.len())
+            .duration_from_sample_count(
+                self.audio_buf
+                    .len(),
+            )
             > Duration::from_secs(1)
         {
-            self.advance(self.audio_format.sample_count(Duration::from_millis(500)));
+            self.advance(
+                self.audio_format
+                    .sample_count(Duration::from_millis(500)),
+            );
         }
 
-        let count = buf.len().min(self.audio_buf.len());
+        let count = buf
+            .len()
+            .min(
+                self.audio_buf
+                    .len(),
+            );
         buf.copy_from_slice(&self.audio_buf[..count]);
         self.advance(count);
 
@@ -179,7 +227,12 @@ pub struct MediaTrackOpusEncoder {
 
 impl MediaTrackOpusEncoder {
     pub fn new(track_channel_cap: usize, audio_format: AudioFormat) -> Result<(Self, MediaTrack)> {
-        debug_assert_eq!(audio_format.sample_rate.0, OPUS_SAMPLE_RATE);
+        debug_assert_eq!(
+            audio_format
+                .sample_rate
+                .0,
+            OPUS_SAMPLE_RATE
+        );
         let (sender, receiver) = broadcast::channel(track_channel_cap);
         let channels = match audio_format.channel_count {
             1 => OpusChannels::Mono,
@@ -197,7 +250,10 @@ impl MediaTrackOpusEncoder {
 
 impl AudioSink for MediaTrackOpusEncoder {
     fn tick(&mut self, buf: &[f32]) -> Result<ControlFlow<(), ()>> {
-        for (payload, sample_count) in self.encoder.push_slice(buf) {
+        for (payload, sample_count) in self
+            .encoder
+            .push_slice(buf)
+        {
             let payload_len = payload.len();
             let frame = MediaFrame {
                 payload,
@@ -205,7 +261,10 @@ impl AudioSink for MediaTrackOpusEncoder {
                 skipped_frames: None,
                 skipped_samples: None,
             };
-            match self.sender.send(frame) {
+            match self
+                .sender
+                .send(frame)
+            {
                 Err(_) => {
                     info!("closing encoder loop: track receiver closed.");
                     return Ok(ControlFlow::Break(()));
@@ -234,7 +293,9 @@ impl OpusEncoder {
         debug!(
             "initialized opus encoder: channels {} bitrate {:?} bandwidth {:?}",
             channels as u16,
-            encoder.get_bitrate().unwrap(),
+            encoder
+                .get_bitrate()
+                .unwrap(),
             encoder.get_bandwidth()
         );
         let mut out_buf = BytesMut::new();
@@ -279,16 +340,28 @@ impl OpusEncoder {
     }
 
     pub fn push_sample(&mut self, sample: f32) -> Option<(Bytes, u32)> {
-        self.samples.push(sample);
-        if self.samples.len() >= self.samples_per_frame {
-            let sample_count = self.samples.len() as u32;
+        self.samples
+            .push(sample);
+        if self
+            .samples
+            .len()
+            >= self.samples_per_frame
+        {
+            let sample_count = self
+                .samples
+                .len() as u32;
             let size = self
                 .encoder
                 .encode_float(&self.samples, &mut self.out_buf)
                 .expect("failed to encode");
-            self.samples.clear();
-            let encoded = self.out_buf.split_to(size).freeze();
-            self.out_buf.resize(self.samples_per_frame, 0);
+            self.samples
+                .clear();
+            let encoded = self
+                .out_buf
+                .split_to(size)
+                .freeze();
+            self.out_buf
+                .resize(self.samples_per_frame, 0);
             Some((encoded, sample_count))
         } else {
             None

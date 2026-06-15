@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
@@ -65,18 +65,27 @@ impl VideoCapture {
             .name("video-capture".into())
             .spawn(move || match open_camera(&config) {
                 Ok(mut cam) => {
-                    init_tx.send(Ok(())).ok();
+                    init_tx
+                        .send(Ok(()))
+                        .ok();
                     camera_capture_loop(&mut cam, frame_tx);
                 }
                 Err(e) => {
-                    init_tx.send(Err(e)).ok();
+                    init_tx
+                        .send(Err(e))
+                        .ok();
                 }
             })
             .context("failed to spawn video capture thread")?;
 
         init_rx.await??;
 
-        Ok(Self { sink_sender: sink_tx, width, height, fps })
+        Ok(Self {
+            sink_sender: sink_tx,
+            width,
+            height,
+            fps,
+        })
     }
 
     /// Register a new sink. Frames are pushed to it until it signals
@@ -92,7 +101,8 @@ impl VideoCapture {
     pub async fn create_vp8_track(&self, bitrate_kbps: u32) -> Result<MediaTrack> {
         let (encoder, track) =
             Vp8Encoder::new(self.width, self.height, self.fps, bitrate_kbps, 16)?;
-        self.add_sink(encoder).await?;
+        self.add_sink(encoder)
+            .await?;
         Ok(track)
     }
 
@@ -110,7 +120,12 @@ impl VideoCapture {
             .name("video-dispatch-test".into())
             .spawn(move || dispatch_loop(frame_rx, sink_rx))
             .expect("failed to spawn test dispatch thread");
-        Self { sink_sender: sink_tx, width, height, fps }
+        Self {
+            sink_sender: sink_tx,
+            width,
+            height,
+            fps,
+        }
     }
 }
 
@@ -119,19 +134,23 @@ impl VideoCapture {
 fn open_camera(config: &CameraConfig) -> Result<nokhwa::Camera> {
     use nokhwa::{
         pixel_format::RgbFormat,
-        utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution},
+        utils::{
+            CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType,
+            Resolution,
+        },
     };
 
-    let requested = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(
-        CameraFormat::new(
+    let requested =
+        RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(CameraFormat::new(
             Resolution::new(config.width, config.height),
             FrameFormat::YUYV,
             config.fps,
-        ),
-    ));
+        )));
     let mut camera = nokhwa::Camera::new(CameraIndex::Index(config.index), requested)
         .context("failed to open camera")?;
-    camera.open_stream().context("failed to open camera stream")?;
+    camera
+        .open_stream()
+        .context("failed to open camera stream")?;
     info!(
         width = config.width,
         height = config.height,
@@ -165,7 +184,10 @@ fn camera_capture_loop(camera: &mut nokhwa::Camera, frame_tx: mpsc::Sender<Video
             height: h,
             data: rgb_to_i420(rgb.as_raw(), w, h),
         };
-        if frame_tx.blocking_send(frame).is_err() {
+        if frame_tx
+            .blocking_send(frame)
+            .is_err()
+        {
             debug!("frame channel closed, stopping camera capture");
             break;
         }
@@ -175,7 +197,7 @@ fn camera_capture_loop(camera: &mut nokhwa::Camera, frame_tx: mpsc::Sender<Video
 
 // ── dispatch loop ─────────────────────────────────────────────────────────────
 
-fn dispatch_loop(
+pub(crate) fn dispatch_loop(
     mut frame_rx: mpsc::Receiver<VideoFrame>,
     mut sink_rx: mpsc::Receiver<Box<dyn VideoSink>>,
 ) {
@@ -387,7 +409,9 @@ mod tests {
     impl VideoSink for CollectSink {
         fn push_frame(&mut self, frame: &VideoFrame) -> Result<ControlFlow<(), ()>> {
             self.count += 1;
-            self.tx.send(frame.clone()).ok();
+            self.tx
+                .send(frame.clone())
+                .ok();
             if self.count >= self.limit {
                 Ok(ControlFlow::Break(()))
             } else {
@@ -403,13 +427,20 @@ mod tests {
 
         let (sink_tx, mut sink_rx) = tokio::sync::mpsc::unbounded_channel();
         capture
-            .add_sink(CollectSink { tx: sink_tx, limit: 3, count: 0 })
+            .add_sink(CollectSink {
+                tx: sink_tx,
+                limit: 3,
+                count: 0,
+            })
             .await
             .unwrap();
 
         let frame = VideoFrame::new_black(4, 4);
         for _ in 0..3 {
-            frame_tx.send(frame.clone()).await.unwrap();
+            frame_tx
+                .send(frame.clone())
+                .await
+                .unwrap();
         }
 
         for _ in 0..3 {
@@ -428,13 +459,20 @@ mod tests {
         let (sink_tx, mut sink_rx) = tokio::sync::mpsc::unbounded_channel();
         // Sink breaks after 2 frames.
         capture
-            .add_sink(CollectSink { tx: sink_tx, limit: 2, count: 0 })
+            .add_sink(CollectSink {
+                tx: sink_tx,
+                limit: 2,
+                count: 0,
+            })
             .await
             .unwrap();
 
         let frame = VideoFrame::new_black(4, 4);
         for _ in 0..5 {
-            frame_tx.send(frame.clone()).await.unwrap();
+            frame_tx
+                .send(frame.clone())
+                .await
+                .unwrap();
         }
 
         // Wait for exactly 2 frames.
@@ -448,7 +486,12 @@ mod tests {
         // Give the dispatch loop time to process the remaining 3 frames, then
         // verify the (now-removed) sink received nothing extra.
         tokio::time::sleep(Duration::from_millis(20)).await;
-        assert!(sink_rx.try_recv().is_err(), "no frames expected after break");
+        assert!(
+            sink_rx
+                .try_recv()
+                .is_err(),
+            "no frames expected after break"
+        );
     }
 
     #[tokio::test]
@@ -459,11 +502,19 @@ mod tests {
         let (tx1, mut rx1) = tokio::sync::mpsc::unbounded_channel();
         let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel();
         capture
-            .add_sink(CollectSink { tx: tx1, limit: 99, count: 0 })
+            .add_sink(CollectSink {
+                tx: tx1,
+                limit: 99,
+                count: 0,
+            })
             .await
             .unwrap();
         capture
-            .add_sink(CollectSink { tx: tx2, limit: 99, count: 0 })
+            .add_sink(CollectSink {
+                tx: tx2,
+                limit: 99,
+                count: 0,
+            })
             .await
             .unwrap();
 
@@ -473,14 +524,21 @@ mod tests {
 
         let frame = VideoFrame::new_black(4, 4);
         for _ in 0..3 {
-            frame_tx.send(frame.clone()).await.unwrap();
+            frame_tx
+                .send(frame.clone())
+                .await
+                .unwrap();
         }
 
         for _ in 0..3 {
             tokio::time::timeout(Duration::from_secs(2), rx1.recv())
-                .await.expect("timeout rx1").expect("closed");
+                .await
+                .expect("timeout rx1")
+                .expect("closed");
             tokio::time::timeout(Duration::from_secs(2), rx2.recv())
-                .await.expect("timeout rx2").expect("closed");
+                .await
+                .expect("timeout rx2")
+                .expect("closed");
         }
     }
 
@@ -490,7 +548,10 @@ mod tests {
     async fn create_vp8_track_codec_is_vp8() {
         let (_frame_tx, frame_rx) = mpsc::channel(8);
         let capture = VideoCapture::new_for_test(frame_rx, 128, 128, 30);
-        let track = capture.create_vp8_track(500).await.unwrap();
+        let track = capture
+            .create_vp8_track(500)
+            .await
+            .unwrap();
         assert_eq!(track.codec(), Codec::Vp8);
     }
 
@@ -498,18 +559,27 @@ mod tests {
     async fn vp8_track_receives_encoded_frames() {
         let (frame_tx, frame_rx) = mpsc::channel(8);
         let capture = VideoCapture::new_for_test(frame_rx, 128, 128, 30);
-        let mut track = capture.create_vp8_track(500).await.unwrap();
+        let mut track = capture
+            .create_vp8_track(500)
+            .await
+            .unwrap();
 
         let frame = VideoFrame::new_black(128, 128);
         for _ in 0..5 {
-            frame_tx.send(frame.clone()).await.unwrap();
+            frame_tx
+                .send(frame.clone())
+                .await
+                .unwrap();
         }
 
         // Poll with a hard timeout rather than an arbitrary fixed sleep.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
         let mut count = 0;
         while tokio::time::Instant::now() < deadline {
-            while track.try_recv().is_ok() {
+            while track
+                .try_recv()
+                .is_ok()
+            {
                 count += 1;
             }
             if count > 0 {

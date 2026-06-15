@@ -3,6 +3,7 @@ use std::ops::ControlFlow;
 use anyhow::Result;
 
 pub mod capture;
+pub mod file_capture;
 pub mod render;
 pub mod vp8;
 
@@ -27,7 +28,11 @@ impl VideoFrame {
         let mut data = vec![0u8; y_size + 2 * uv_size];
         data[..y_size].fill(16);
         data[y_size..].fill(128);
-        Self { width, height, data }
+        Self {
+            width,
+            height,
+            data,
+        }
     }
 }
 
@@ -49,9 +54,24 @@ mod tests {
     fn new_black_data_size() {
         let (w, h) = (8u32, 6u32);
         let frame = VideoFrame::new_black(w, h);
-        assert_eq!(frame.data.len(), (w * h * 3 / 2) as usize);
+        assert_eq!(
+            frame
+                .data
+                .len(),
+            (w * h * 3 / 2) as usize
+        );
         let y_size = (w * h) as usize;
-        assert!(frame.data[..y_size].iter().all(|&b| b == 16), "Y plane must be 16");
-        assert!(frame.data[y_size..].iter().all(|&b| b == 128), "UV planes must be 128");
+        assert!(
+            frame.data[..y_size]
+                .iter()
+                .all(|&b| b == 16),
+            "Y plane must be 16"
+        );
+        assert!(
+            frame.data[y_size..]
+                .iter()
+                .all(|&b| b == 128),
+            "UV planes must be 128"
+        );
     }
 }

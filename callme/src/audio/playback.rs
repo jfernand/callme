@@ -1,26 +1,26 @@
 use std::{
     num::NonZeroUsize,
     ops::ControlFlow,
-    sync::{atomic::AtomicBool, Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
     time::{Duration, Instant},
 };
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{Result, anyhow, bail};
 use cpal::{
-    traits::{DeviceTrait, StreamTrait},
     Device, Sample, SampleFormat,
+    traits::{DeviceTrait, StreamTrait},
 };
 use fixed_resample::{FixedResampler, ResampleQuality};
 use ringbuf::{
-    traits::{Consumer as _, Observer as _, Producer as _, Split},
     HeapCons as Consumer, HeapProd as Producer,
+    traits::{Consumer as _, Observer as _, Producer as _, Split},
 };
 use tokio::sync::{broadcast, mpsc, oneshot};
-use tracing::{debug, error, info, trace, trace_span, warn, Level};
+use tracing::{Level, debug, error, info, trace, trace_span, warn};
 
 use super::{
-    device::{find_device, find_output_stream_config, Direction, StreamConfigWithFormat},
-    AudioFormat, WebrtcAudioProcessor, DURATION_10MS, DURATION_20MS, ENGINE_FORMAT, SAMPLE_RATE,
+    AudioFormat, DURATION_10MS, DURATION_20MS, ENGINE_FORMAT, SAMPLE_RATE, WebrtcAudioProcessor,
+    device::{Direction, StreamConfigWithFormat, find_device, find_output_stream_config},
 };
 use crate::{
     codec::opus::MediaTrackOpusDecoder,
@@ -54,17 +54,23 @@ impl AudioPlayback {
         std::thread::spawn(move || {
             if let Err(err) = audio_thread_priority::promote_current_thread_to_real_time(
                 buffer_size as u32,
-                ENGINE_FORMAT.sample_rate.0,
+                ENGINE_FORMAT
+                    .sample_rate
+                    .0,
             ) {
                 warn!("failed to set playback thread to realtime priority: {err:?}");
             }
             let stream = match start_playback_stream(&device, &stream_config, processor, consumer) {
                 Ok(stream) => {
-                    init_tx.send(Ok(())).unwrap();
+                    init_tx
+                        .send(Ok(()))
+                        .unwrap();
                     stream
                 }
                 Err(err) => {
-                    init_tx.send(Err(err)).unwrap();
+                    init_tx
+                        .send(Err(err))
+                        .unwrap();
                     return;
                 }
             };
@@ -78,7 +84,8 @@ impl AudioPlayback {
 
     pub async fn add_track(&self, track: MediaTrack) -> Result<()> {
         let decoder = MediaTrackOpusDecoder::new(track)?;
-        self.add_source(decoder).await
+        self.add_source(decoder)
+            .await
     }
 
     pub async fn add_source(&self, source: impl AudioSource) -> Result<()> {
@@ -190,7 +197,9 @@ fn start_playback_stream(
     let resampler = FixedResampler::new(
         NonZeroUsize::new(format.channel_count as usize).unwrap(),
         SAMPLE_RATE.0,
-        format.sample_rate.0,
+        format
+            .sample_rate
+            .0,
         ResampleQuality::High,
         true,
     );
@@ -231,7 +240,9 @@ fn build_playback_stream<S: dasp_sample::FromSample<f32> + cpal::SizedSample + D
     config: &cpal::StreamConfig,
     mut state: PlaybackState,
 ) -> Result<cpal::Stream, cpal::BuildStreamError> {
-    let frame_size = state.format.sample_count(DURATION_10MS);
+    let frame_size = state
+        .format
+        .sample_count(DURATION_10MS);
     let mut unprocessed: Vec<f32> = Vec::with_capacity(frame_size);
     let mut processed: Vec<f32> = Vec::with_capacity(frame_size);
     let mut resampled: Vec<f32> = Vec::with_capacity(frame_size);
@@ -279,9 +290,9 @@ fn build_playback_stream<S: dasp_sample::FromSample<f32> + cpal::SizedSample + D
             unprocessed.truncate(remainder_len);
 
             // resample
-            state.resampler.process_interleaved(&processed, |samples|{
+            state.resampler.process_interleaved(&processed, |samples| {
                 resampled.extend_from_slice(samples);
-            } , None, false);
+            }, None, false);
             processed.clear();
 
 

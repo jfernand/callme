@@ -1,10 +1,8 @@
 use std::str::FromStr;
 
-use anyhow::{bail, Context, Result};
-use iroh::{Endpoint, NodeAddr, SecretKey};
+use anyhow::Result;
+use iroh::{Endpoint, SecretKey};
 pub use iroh_roq::ALPN;
-
-use crate::rtc::RtcConnection;
 
 pub async fn bind_endpoint() -> Result<Endpoint> {
     let secret_key = match std::env::var("IROH_SECRET") {
