@@ -20,7 +20,7 @@ on:
         default: "true"
 
 env:
-  GUI_BIN_NAME: callme-egui
+  GUI_BIN_NAME: vcallme-egui
   CLI_BIN_NAME: vcallme-cli
 
 jobs:
