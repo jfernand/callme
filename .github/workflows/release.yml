@@ -106,7 +106,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libasound2-dev libdbus-1-dev musl-tools
+          sudo apt-get install -y libasound2-dev libdbus-1-dev musl-tools libvpx-dev
 
       - name: Set up Homebrew (macOS)
         if: matrix.os == 'macOS-latest'
@@ -114,7 +114,7 @@ jobs:
 
       - name: Install dependencies (macOS)
         if: matrix.os == 'macOS-latest'
-        run: brew install automake libtool
+        run: brew install automake libtool libvpx
 
       - name: Build release binary
         shell: bash
