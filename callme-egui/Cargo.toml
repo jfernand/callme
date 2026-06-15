@@ -55,8 +55,9 @@ eframe = { version = "0.31", default-features = false, features = [
 arboard = { version = "3.4.1", features = ["wl-clipboard-rs"] }
 
 [features]
-default = ["audio-processing"]
+default = ["audio-processing", "video"]
 audio-processing = ["callme/audio-processing"]
+video = ["callme/video"]
 
 [[package.metadata.android.uses_permission]]
 name = "android.permission.INTERNET"

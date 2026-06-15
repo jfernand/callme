@@ -2,6 +2,8 @@
 use egui_winit::winit;
 
 pub mod app;
+#[cfg(feature = "video")]
+mod video_view;
 
 #[cfg(target_os = "android")]
 #[no_mangle]

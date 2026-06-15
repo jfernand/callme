@@ -12,6 +12,9 @@ use iroh::{protocol::Router, Endpoint, KeyParsingError, NodeId};
 use tokio::task::JoinSet;
 use tracing::{info, warn};
 
+#[cfg(feature = "video")]
+use crate::video_view::VideoView;
+
 const DEFAULT: &str = "<default>";
 
 pub struct App {
@@ -32,6 +35,8 @@ struct AppState {
     devices: callme::audio::Devices,
     audio_config: UiAudioConfig,
     calls: BTreeMap<NodeId, CallState>,
+    #[cfg(feature = "video")]
+    video_views: BTreeMap<NodeId, VideoView>,
 }
 
 struct UiAudioConfig {
@@ -76,7 +81,7 @@ impl eframe::App for App {
             self.is_first_update = false;
             ctx.set_zoom_factor(1.5);
             let ctx = ctx.clone();
-            let callback = Box::new(move || ctx.request_repaint());
+            let callback = std::sync::Arc::new(move || ctx.request_repaint());
             self.state.cmd(Command::SetUpdateCallback { callback });
         }
         // on android, add some space at the top.
@@ -102,6 +107,8 @@ impl App {
             devices,
             audio_config: Default::default(),
             calls: Default::default(),
+            #[cfg(feature = "video")]
+            video_views: Default::default(),
         };
 
         let app = App {
@@ -121,12 +128,24 @@ impl AppState {
                 Event::SetCallState(node_id, call_state) => {
                     if matches!(call_state, CallState::Aborted) {
                         self.calls.remove(&node_id);
+                        #[cfg(feature = "video")]
+                        self.video_views.remove(&node_id);
                     } else {
                         self.calls.insert(node_id, call_state);
                     }
                 }
+                #[cfg(feature = "video")]
+                Event::VideoTrack(node_id, track) => {
+                    match VideoView::new(track) {
+                        Ok(view) => { self.video_views.insert(node_id, view); }
+                        Err(e) => warn!("failed to create VideoView: {e}"),
+                    }
+                }
             }
         }
+
+        #[cfg(feature = "video")]
+        self.video_views.retain(|_, view| view.is_open());
 
         egui::CentralPanel::default().show(ctx, |ui| match self.section {
             UiSection::Config => self.ui_section_config(ui),
@@ -233,6 +252,11 @@ impl AppState {
                     }
                 });
             }
+
+            #[cfg(feature = "video")]
+            for view in self.video_views.values_mut() {
+                view.ui(ui);
+            }
         });
     }
 
@@ -313,6 +337,8 @@ fn fmt_error(text: &str) -> RichText {
 enum Event {
     EndpointBound(NodeId),
     SetCallState(NodeId, CallState),
+    #[cfg(feature = "video")]
+    VideoTrack(NodeId, MediaTrack),
 }
 
 #[derive(strum::Display)]
@@ -329,7 +355,7 @@ enum CallInfo {
     Active(RtcConnection),
 }
 
-type UpdateCallback = Box<dyn Fn() + Send + 'static>;
+type UpdateCallback = std::sync::Arc<dyn Fn() + Send + Sync + 'static>;
 
 enum Command {
     SetUpdateCallback { callback: UpdateCallback },
@@ -489,14 +515,28 @@ impl Worker {
             .audio_context
             .clone()
             .context("missing audio context")?;
+        let event_tx = self.event_tx.clone();
+        let update_callback = self.update_callback.clone();
         self.call_tasks.spawn(async move {
             info!("starting connection with {}", node_id.fmt_short());
             let fut = async {
                 audio_context.play_track(track).await?;
                 let capture_track = audio_context.capture_track().await?;
                 conn.send_track(capture_track).await?;
-                #[allow(clippy::redundant_pattern_matching)]
-                while let Some(_) = conn.recv_track().await? {}
+                while let Some(remote_track) = conn.recv_track().await? {
+                    match remote_track.kind() {
+                        TrackKind::Audio => audio_context.play_track(remote_track).await?,
+                        TrackKind::Video => {
+                            #[cfg(feature = "video")]
+                            {
+                                event_tx.send(Event::VideoTrack(node_id, remote_track)).await.ok();
+                                if let Some(cb) = &update_callback { cb(); }
+                            }
+                            #[cfg(not(feature = "video"))]
+                            warn!("received video track but video feature is disabled");
+                        }
+                    }
+                }
                 anyhow::Ok(())
             };
             let res = fut.await;
@@ -516,6 +556,8 @@ impl Worker {
             .audio_context
             .clone()
             .context("missing audio context")?;
+        let event_tx = self.event_tx.clone();
+        let update_callback = self.update_callback.clone();
         self.call_tasks.spawn(async move {
             info!("starting connection with {}", node_id.fmt_short());
             let fut = async {
@@ -532,7 +574,15 @@ impl Worker {
                         TrackKind::Audio => {
                             audio_context.play_track(remote_track).await?;
                         }
-                        TrackKind::Video => unimplemented!(),
+                        TrackKind::Video => {
+                            #[cfg(feature = "video")]
+                            {
+                                event_tx.send(Event::VideoTrack(node_id, remote_track)).await.ok();
+                                if let Some(cb) = &update_callback { cb(); }
+                            }
+                            #[cfg(not(feature = "video"))]
+                            warn!("received video track but video feature is disabled");
+                        }
                     }
                 }
                 anyhow::Ok(())
