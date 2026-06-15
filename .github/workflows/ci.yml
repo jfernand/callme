@@ -23,7 +23,7 @@ jobs:
       - name: Update apt
         run: sudo apt update
       - name: Install dependencies
-        run: sudo apt-get install libasound2-dev libdbus-1-dev
+        run: sudo apt-get install libasound2-dev libdbus-1-dev libv4l-dev nasm
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -214,7 +214,7 @@ jobs:
       - name: Update apt
         run: sudo apt update
       - name: Install dependencies
-        run: sudo apt-get install libasound2-dev libdbus-1-dev
+        run: sudo apt-get install libasound2-dev libdbus-1-dev libv4l-dev nasm
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy

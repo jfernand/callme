@@ -20,7 +20,8 @@ on:
         default: "true"
 
 env:
-  BIN_NAME: callme-egui
+  GUI_BIN_NAME: callme-egui
+  CLI_BIN_NAME: vcallme-cli
 
 jobs:
   create-release:
@@ -34,7 +35,6 @@ jobs:
         shell: bash
         if: env.RELEASE_VERSION == '' && github.event_name == 'push'
         run: |
-          # See: https://github.community/t5/GitHub-Actions/How-to-get-just-the-tag-name/m-p/32167/highlight/true#M1027
           echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
           echo "version is: ${{ env.RELEASE_VERSION }}"
       - name: Get the release version from the tag (dispatch)
@@ -57,46 +57,40 @@ jobs:
           tag_name: ${{ env.RELEASE_VERSION }}
           release_name: ${{ env.RELEASE_VERSION }}
 
-  build-release:
-    name: build-release
+  # ── GUI (callme-egui) ────────────────────────────────────────────────────────
+
+  build-release-gui:
+    name: build-gui (${{ matrix.target }})
     needs: create-release
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
-        name:
-          [
-            ubuntu-latest,
-            ubuntu-arm-latest,
-            macOS-arm-latest,
-            macOS-latest,
-            windows-latest,
-          ]
-        rust: [stable]
         include:
-          - name: ubuntu-arm-latest
-            os: ubuntu-latest
-            target: linux-aarch64
-            cargo_targets: "aarch64-unknown-linux-gnu"
-            runner: ubuntu-22.04-arm
           - name: ubuntu-latest
             os: ubuntu-latest
             target: linux-x86_64
-            cargo_targets: "x86_64-unknown-linux-gnu"
+            cargo_targets: x86_64-unknown-linux-gnu
             runner: ubuntu-20.04
+          - name: ubuntu-arm-latest
+            os: ubuntu-latest
+            target: linux-aarch64
+            cargo_targets: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
           - name: macOS-latest
             os: macOS-latest
             target: mac-x86_64
-            cargo_targets: "x86_64-apple-darwin"
+            cargo_targets: x86_64-apple-darwin
             runner: macos-13
           - name: macOS-arm-latest
             os: macOS-latest
             target: mac-aarch64
-            cargo_targets: "aarch64-apple-darwin"
+            cargo_targets: aarch64-apple-darwin
             runner: macos-latest
           - name: windows-latest
             os: windows-latest
             target: windows-x86_64
-            cargo_targets: "x86_64-pc-windows-msvc"
+            cargo_targets: x86_64-pc-windows-msvc
             runner: windows-latest
     steps:
       - name: Checkout repository
@@ -106,14 +100,13 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          toolchain: ${{ matrix.rust }}
           targets: ${{ matrix.cargo_targets }}
 
-      - name: Install dependencies (linux)
+      - name: Install dependencies (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update
-          sudo apt-get install libasound2-dev libdbus-1-dev musl-tools -y
+          sudo apt-get install -y libasound2-dev libdbus-1-dev musl-tools
 
       - name: Set up Homebrew (macOS)
         if: matrix.os == 'macOS-latest'
@@ -126,31 +119,28 @@ jobs:
       - name: Build release binary
         shell: bash
         run: |
-          if [ "${{ matrix.name }}" = "ubuntu-arm-latest" ]; then
-            export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc
-            export CC=aarch64-linux-gnu-gcc
-          fi
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cargo build -p callme-egui --no-default-features --verbose --release --target ${{ matrix.cargo_targets }}
+            cargo build -p callme-egui --no-default-features --release --target ${{ matrix.cargo_targets }}
           else
-            cargo build -p callme-egui --verbose --release --target ${{ matrix.cargo_targets }}
+            cargo build -p callme-egui --release --target ${{ matrix.cargo_targets }}
           fi
 
       - name: Build archive
         shell: bash
         run: |
-          staging="${{ env.BIN_NAME }}-${{ needs.create-release.outputs.release_version }}-${{ matrix.target }}"
+          version="${{ needs.create-release.outputs.release_version }}"
+          staging="${{ env.GUI_BIN_NAME }}-${version}-${{ matrix.target }}"
           mkdir -p "$staging"
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp "target/${{ matrix.cargo_targets }}/release/${{ env.BIN_NAME }}.exe" "$staging/"
-            cd "$staging"
-            7z a "../$staging.zip" .
+            cp "target/${{ matrix.cargo_targets }}/release/${{ env.GUI_BIN_NAME }}.exe" "$staging/"
+            cd "$staging" && 7z a "../$staging.zip" . && cd ..
             echo "ASSET=$staging.zip" >> $GITHUB_ENV
           else
-            cp "target/${{ matrix.cargo_targets }}/release/${{ env.BIN_NAME }}" "$staging/"
+            cp "target/${{ matrix.cargo_targets }}/release/${{ env.GUI_BIN_NAME }}" "$staging/"
             tar czf "$staging.tar.gz" -C "$staging" .
             echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
           fi
+
       - name: Upload release archive
         uses: actions/upload-release-asset@v1.0.2
         if: github.event.inputs.upload_artifacts == 'true' || github.event_name == 'push'
@@ -161,6 +151,113 @@ jobs:
           asset_path: ${{ env.ASSET }}
           asset_name: ${{ env.ASSET }}
           asset_content_type: application/octet-stream
+
+  # ── CLI (vcallme-cli) ────────────────────────────────────────────────────────
+
+  build-release-cli:
+    name: build-cli (${{ matrix.target }})
+    needs: create-release
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: ubuntu-latest
+            os: ubuntu-latest
+            target: linux-x86_64
+            cargo_targets: x86_64-unknown-linux-gnu
+            runner: ubuntu-20.04
+            # Default features: audio-processing + video (libvpx built from source via cmake).
+            cargo_extra_args: ""
+          - name: ubuntu-arm-latest
+            os: ubuntu-latest
+            target: linux-aarch64
+            cargo_targets: aarch64-unknown-linux-gnu
+            runner: ubuntu-22.04-arm
+            cargo_extra_args: ""
+          - name: macOS-latest
+            os: macOS-latest
+            target: mac-x86_64
+            cargo_targets: x86_64-apple-darwin
+            runner: macos-13
+            cargo_extra_args: ""
+          - name: macOS-arm-latest
+            os: macOS-latest
+            target: mac-aarch64
+            cargo_targets: aarch64-apple-darwin
+            runner: macos-latest
+            cargo_extra_args: ""
+          - name: windows-latest
+            os: windows-latest
+            target: windows-x86_64
+            cargo_targets: x86_64-pc-windows-msvc
+            runner: windows-latest
+            # audio-processing and video native deps are not reliably available
+            # on the Windows MSVC runner; ship an audio-only build for now.
+            cargo_extra_args: "--no-default-features"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.cargo_targets }}
+
+      - name: Install dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          # libasound2-dev / libdbus-1-dev: audio
+          # libv4l-dev: V4L2 camera backend for nokhwa
+          # nasm: x86 assembly for libvpx (pre-installed on runners, listed for clarity)
+          sudo apt-get install -y libasound2-dev libdbus-1-dev libv4l-dev nasm
+
+      - name: Set up Homebrew (macOS)
+        if: matrix.os == 'macOS-latest'
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Install dependencies (macOS)
+        if: matrix.os == 'macOS-latest'
+        # automake/libtool: needed by opus and webrtc-audio-processing build scripts.
+        # nasm: x86 assembly for libvpx (Intel runner only; harmless on ARM).
+        run: brew install automake libtool nasm
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          cargo build -p vcallme-cli ${{ matrix.cargo_extra_args }} --release --target ${{ matrix.cargo_targets }}
+
+      - name: Build archive
+        shell: bash
+        run: |
+          version="${{ needs.create-release.outputs.release_version }}"
+          staging="${{ env.CLI_BIN_NAME }}-${version}-${{ matrix.target }}"
+          mkdir -p "$staging"
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp "target/${{ matrix.cargo_targets }}/release/${{ env.CLI_BIN_NAME }}.exe" "$staging/"
+            cd "$staging" && 7z a "../$staging.zip" . && cd ..
+            echo "ASSET=$staging.zip" >> $GITHUB_ENV
+          else
+            cp "target/${{ matrix.cargo_targets }}/release/${{ env.CLI_BIN_NAME }}" "$staging/"
+            tar czf "$staging.tar.gz" -C "$staging" .
+            echo "ASSET=$staging.tar.gz" >> $GITHUB_ENV
+          fi
+
+      - name: Upload release archive
+        uses: actions/upload-release-asset@v1.0.2
+        if: github.event.inputs.upload_artifacts == 'true' || github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ needs.create-release.outputs.upload_url }}
+          asset_path: ${{ env.ASSET }}
+          asset_name: ${{ env.ASSET }}
+          asset_content_type: application/octet-stream
+
+  # ── Android APK (callme-egui) ────────────────────────────────────────────────
 
   build-android:
     name: build-android
@@ -205,7 +302,8 @@ jobs:
       - name: Rename apk
         shell: bash
         run: |
-          filename="${{ env.BIN_NAME }}-${{ needs.create-release.outputs.release_version }}-android-aarch64.apk"
+          version="${{ needs.create-release.outputs.release_version }}"
+          filename="${{ env.GUI_BIN_NAME }}-${version}-android-aarch64.apk"
           mv target/release/apk/callme-egui.apk "$filename"
           echo "ASSET=$filename" >> $GITHUB_ENV
 
